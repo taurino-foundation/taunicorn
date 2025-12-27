@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 
 use crate::channel::{ReceiverHandle, SenderHandle};
 use crate::client::connect;
-use crate::server::serve;
+use crate::server::{server as main_server};
 
 
 
@@ -26,6 +26,6 @@ fn _taunicorn(_py: Python, module: &Bound<PyModule>) -> PyResult<()> {
     module.add_class::<SenderHandle>()?;
     module.add_class::<ReceiverHandle>()?;
     module.add_function(wrap_pyfunction!(connect, module)?)?;
-    module.add_function(wrap_pyfunction!(serve, module)?)?;
+    module.add_function(wrap_pyfunction!(main_server, module)?)?;
     Ok(())
 }

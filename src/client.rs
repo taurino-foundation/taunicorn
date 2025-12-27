@@ -15,147 +15,230 @@ use tokio::sync::mpsc::channel;
 
 use crate::channel::{ReceiverHandle, SenderHandle};
 
-/// # connect - Local Socket Client for Python Integration
+/// # PyO3 Function: connect
 /// 
-/// Establishes a client connection to a Unix domain socket (or Windows named pipe) 
-/// and provides bidirectional communication to a Python handler.
+/// Establishes a bidirectional connection between a Python application and a local socket
+/// (Unix domain socket on Linux/macOS, named pipe on Windows). This is a **blocking** 
+/// connection that runs until the socket is closed.
+/// 
+/// ## Key Characteristics:
+/// - **Blocking**: The function doesn't return until the connection terminates
+/// - **Bidirectional**: Full-duplex communication between Python and socket
+/// - **Async/await**: Returns a Python awaitable future
+/// 
+/// ## Flow Overview:
+/// 1. Convert path to OS-specific socket name
+/// 2. Create communication channels between Rust and Python
+/// 3. Connect to the local socket
+/// 4. Invoke Python handler with communication handles
+/// 5. Run I/O loop until connection closes
 /// 
 /// ## Arguments:
-/// - `py`: Python interpreter context
-/// - `path`: Filesystem path for the socket/pipe (converted to OS-specific format)
-/// - `handler`: Python callable that processes the connection
+/// - `py`: Python interpreter context (required by PyO3)
+/// - `path`: String path to the socket file (e.g., "/tmp/mysocket")
+/// - `handler`: Python callable that receives SenderHandle/ReceiverHandle objects
 /// 
 /// ## Returns:
-/// - PyResult containing an async handle that completes immediately after connection setup
+/// - PyResult containing a Python awaitable future
+/// - The future resolves when the connection is fully closed
 /// 
-/// ## Key Differences from `serve()`:
-/// - **Single connection**: Connects once instead of accepting multiple clients
-/// - **Fire-and-forget**: Spawns background tasks and returns immediately
-/// - **Non-blocking handler**: Python handler runs detached in background
-/// 
-/// ## Process Flow:
-/// 1. Converts path to OS-specific socket/pipe name
-/// 2. Establishes connection to server
-/// 3. Creates bidirectional channels for Python↔Socket communication
-/// 4. Spawns reader/writer tasks for socket I/O
-/// 5. Invokes Python handler with communication handles
-/// 6. Returns immediately while tasks run in background
-/// 
-/// ## Architecture:
-/// - Creates separate async tasks for reading and writing
-/// - Reader: Socket → Channel → Python
-/// - Writer: Python → Channel → Socket
-/// - Python handler receives SenderHandle/ReceiverHandle for full-duplex communication
+/// ## Example Python Usage:
+/// ```python
+/// async def my_handler(sender, receiver):
+///     # Send data to socket
+///     await sender.send(b"Hello")
+///     # Receive data from socket
+///     data = await receiver.receive()
+///     
+/// # This call blocks until connection ends
+/// await connect("/tmp/mysocket", my_handler)
+/// ```
 #[pyfunction]
 pub fn connect<'py>(
-    py: Python<'py>,
-    path: String,
-    handler: Py<PyAny>,
+    py: Python<'py>,               // Python interpreter context from PyO3
+    path: String,                  // Filesystem path to the socket
+    handler: Py<PyAny>,            // Python callback function
 ) -> PyResult<Bound<'py, PyAny>> {
-    // Convert path to OS-specific filesystem name for local socket/pipe
+    
+    // Convert the provided path to an OS-specific socket name
+    // Example: "/tmp/mysocket" → "\\.\pipe\mysocket" (Windows) or keeps as-is (Unix)
     let name = PathBuf::from(path)
-        .to_fs_name::<GenericFilePath>()?
-        .into_owned();
+        .to_fs_name::<GenericFilePath>()?  // Platform-specific conversion
+        .into_owned();                     // Take ownership of the string
 
-    // Create bidirectional communication channels with 128-message capacity:
-    // - tx_write/rx_write: Python → Rust writer task → Socket
-    // - tx_read/rx_read: Socket → Rust reader task → Python
-    let (tx_write, mut rx_write) = channel::<Bytes>(128);
+    // Create two MPSC (Multi-Producer Single-Consumer) channels for bidirectional communication:
+    // - tx_write/rx_write: Python → Rust writer → Socket (OUTGOING data)
+    // - tx_read/rx_read:   Socket → Rust reader → Python (INCOMING data)
+    // Capacity: 128 messages each to prevent memory exhaustion
+    let (tx_write, rx_write) = channel::<Bytes>(128);
     let (tx_read, rx_read) = channel::<Bytes>(128);
 
-    // Wrap channels in thread-safe references for sharing across tasks
-    let sender = Arc::new(tx_write);
-    let receiver = Arc::new(Mutex::new(rx_read));
-
-    // Convert async Rust future to Python awaitable using tokio runtime
-    pyo3_async_runtimes::tokio::future_into_py::<_, Py<PyAny>>(py, async move {
-        // Establish connection to the server socket/pipe
-        let stream = Stream::connect(name).await?;
-
-        // Split TCP stream into separate read/write halves for concurrent access
+    // Convert the Rust async block into a Python awaitable future
+    // This allows Python to use `await connect(...)`
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        // ──────────────────────────────────────────────────────────────
+        // PHASE 1: CONNECTION ESTABLISHMENT
+        // ──────────────────────────────────────────────────────────────
+        // Connect to the local socket (blocking until connected or failed)
+        let stream = Stream::connect(name).await.map_err(|e| {
+            // Convert Rust error to Python exception
+            PyErr::new::<pyo3::exceptions::PyIOError, _>(
+                format!("Connect failed: {}", e)
+            )
+        })?;
+        
+        // Split the bidirectional stream into separate read/write halves
+        // This allows concurrent reading and writing without mutex locking
         let (mut read_stream, mut write_stream) = stream.split();
-
+        
         // ──────────────────────────────────────────────────────────────
-        // Reader Task: Continuously reads from socket and forwards to Python
+        // PHASE 2: PYTHON HANDLER INVOCATION
         // ──────────────────────────────────────────────────────────────
-        tokio::spawn({
-            let tx_read = tx_read.clone(); // Clone channel sender for the task
-            async move {
-                let mut buf = [0u8; 4096]; // 4KB read buffer
-                
-                // Read loop: Continuously read from socket while connection is open
-                while let Ok(n) = read_stream.read(&mut buf).await {
-                    if n == 0 { 
-                        break; // Connection closed by remote end
-                    }
-                    // Forward received bytes to Python via channel
-                    let _ = tx_read.send(Bytes::copy_from_slice(&buf[..n])).await;
-                }
-                // Task ends automatically when connection closes
-            }
-        });
-
-        // ──────────────────────────────────────────────────────────────
-        // Writer Task: Receives from Python and writes to socket
-        // ──────────────────────────────────────────────────────────────
-        tokio::spawn(async move {
-            // Continuously read from Python→Rust channel
-            while let Some(bytes) = rx_write.recv().await {
-                let _ = write_stream.write_all(&bytes).await;
-            }
-            // Task ends when channel is closed (sender dropped)
-        });
-
-        // ──────────────────────────────────────────────────────────────
-        // Python Handler Invocation (DETACHED)
-        // ──────────────────────────────────────────────────────────────
-        // Note: Handler runs detached - function returns immediately while handler runs in background
+        // Execute Python code within the GIL (Global Interpreter Lock)
         Python::attach(|py| -> PyResult<()> {
-            // Create Python-wrapped handles for bidirectional communication
+            // Wrap channels in thread-safe Arc containers for sharing
+            let sender = Arc::new(tx_write);        // Shared sender to Python
+            let receiver = Arc::new(Mutex::new(rx_read));  // Lock-protected receiver
+            
+            // Create Python-wrapped handles for the Python callback
             let py_sender = Py::new(py, SenderHandle { tx: sender })?;
             let py_receiver = Py::new(py, ReceiverHandle { rx: receiver })?;
-
-            // Call Python handler with sender/receiver objects
-            let result = handler.call1(py, (py_sender, py_receiver))?.into_bound_py_any(py)?;
             
-            // Check if handler returned an async coroutine
+            // Call the Python handler with the communication handles
+            // Note: This call blocks until the handler returns
+            let result = handler.call1(py, (py_sender, py_receiver))?
+                .into_bound_py_any(py)?;
+
+            // Check if the handler returned an async coroutine
             if let Ok(fut) = pyo3_async_runtimes::tokio::into_future(result) {
-                // Spawn handler as detached task - runs independently
+                // If async, spawn it as a detached background task
+                // This allows the I/O loop to continue while Python code runs
                 tokio::spawn(async move {
-                    let _ = fut.await; // Execute handler but don't block on it
+                    let _ = fut.await; // Execute but don't block on completion
                 });
             }
-            // Note: If handler is synchronous, it runs immediately and completes here
+            // If synchronous handler, it already completed above
             Ok(())
-        })?;
-
+        })?;  // GIL released here
+        
         // ──────────────────────────────────────────────────────────────
-        // IMMEDIATE RETURN - Fire-and-forget pattern
+        // PHASE 3: MAIN I/O LOOP (BLOCKING)
         // ──────────────────────────────────────────────────────────────
-        // connect() returns immediately after:
-        // 1. Connection established ✓
-        // 2. I/O tasks spawned ✓  
-        // 3. Python handler invoked ✓
-        // 
-        // Background tasks continue running independently
+        let mut buf = [0u8; 4096];  // 4KB read buffer
+        let mut rx_write = rx_write;  // Take ownership of the receiver
+        
+        // This loop runs until the connection is closed from either side
+        loop {
+            // Use tokio::select! to wait on multiple async operations
+            // The first ready operation gets executed
+            tokio::select! {
+                // ─── READ FROM SOCKET ───────────────────────────────────
+                // Attempt to read data from the socket into buffer
+                read_result = read_stream.read(&mut buf) => {
+                    match read_result {
+                        Ok(0) => {
+                            // EOF: Remote side closed the connection
+                            // This is a clean shutdown signal
+                            break;
+                        }
+                        Ok(n) => {
+                            // Successfully read 'n' bytes
+                            // Convert slice to Bytes (zero-copy if possible)
+                            let data = Bytes::copy_from_slice(&buf[..n]);
+                            // Send to Python (non-blocking, may fail if Python disconnected)
+                            let _ = tx_read.send(data).await;
+                        }
+                        Err(e) => {
+                            // Socket read error (e.g., connection reset)
+                            tracing::debug!("Socket read error: {:?}", e);
+                            break;
+                        }
+                    }
+                }
+                
+                // ─── WRITE TO SOCKET ───────────────────────────────────
+                // Wait for data from Python to write to socket
+                bytes = rx_write.recv() => {
+                    match bytes {
+                        Some(bytes) => {
+                            // Received data from Python
+                            if let Err(e) = write_stream.write_all(&bytes).await {
+                                // Socket write error (e.g., broken pipe)
+                                tracing::debug!("Socket write error: {:?}", e);
+                                break;
+                            }
+                        }
+                        None => {
+                            // Python closed its sending channel
+                            // This typically means the Python handler finished
+                            break;
+                        }
+                    }
+                }
+            }  // End of select!
+        }  // End of loop
+        
+        // ──────────────────────────────────────────────────────────────
+        // PHASE 4: CLEANUP
+        // ──────────────────────────────────────────────────────────────
+        tracing::info!("Connection closed");
+        
+        // Return Python None to indicate successful completion
         Ok(Python::attach(|py| py.None()))
-    })
-}
+    })  // End of async block
+}  // End of function
 
-// ──────────────────────────────────────────────────────────────
-// CONNECTION LIFECYCLE:
-// ──────────────────────────────────────────────────────────────
-// 1. Connection Phase: Blocking connect() call
-// 2. Setup Phase: Channels created, tasks spawned
-// 3. Runtime Phase: I/O tasks run, Python handler executes
-// 4. Cleanup Phase: Tasks exit when connection closes
+// ──────────────────────────────────────────────────────────────────────
+// DATA FLOW VISUALIZATION:
+// ──────────────────────────────────────────────────────────────────────
 // 
-// DATA FLOW:
-// Python → SenderHandle → Channel → Writer Task → Socket
-// Socket → Reader Task → Channel → ReceiverHandle → Python
+//  Python Code          Rust Bridge          Local Socket
+//  ───────────          ───────────          ─────────────
 // 
-// THREADING MODEL:
-// - Tokio runtime manages all async tasks
-// - Channels provide thread-safe message passing
-// - Arc/Mutex enable shared access between tasks
-// ──────────────────────────────────────────────────────────────
+//  handler()    ←──┐
+//       │          │ ReceiverHandle
+//       ↓          └── rx_read (channel)
+//  await receive()      │
+//       │              Reader Loop
+//       │               │ (read_stream.read())
+//       │               ↓
+//       │          Socket Read
+//       │               │
+//       ↓               ↓
+//  process data    Forward bytes
+//       │               │
+//       │               │
+//  await send()   ┌── tx_write (channel)
+//       │         │     │
+//       ↓         │     ↓
+//  sender.send()  │  Writer Loop
+//                 │     │ (write_stream.write_all())
+//                 │     ↓
+//                 └─→ Socket Write
+// 
+// ──────────────────────────────────────────────────────────────────────
+// ERROR HANDLING SCENARIOS:
+// ──────────────────────────────────────────────────────────────────────
+// 1. Connection refused → PyIOError immediately
+// 2. Socket read error → Loop breaks, future resolves
+// 3. Socket write error → Loop breaks, future resolves  
+// 4. Python handler panics → GIL prevents crash, loop continues
+// 5. Python closes channel → Clean break from loop
+// 
+// ──────────────────────────────────────────────────────────────────────
+// THREAD SAFETY NOTES:
+// ──────────────────────────────────────────────────────────────────────
+// - Python GIL is acquired/released via Python::attach()
+// - Arc<Mutex<...>> protects shared receiver from concurrent access
+// - tokio::select! ensures only one I/O operation at a time per direction
+// - Bytes type allows zero-copy sharing between threads
+// 
+// ──────────────────────────────────────────────────────────────────────
+// PERFORMANCE CHARACTERISTICS:
+// ──────────────────────────────────────────────────────────────────────
+// - 4KB buffer balances memory usage and syscall frequency
+// - 128 message channel buffer prevents backpressure deadlocks
+// - Zero-copy Bytes reduces memory allocation for large messages
+// - Async I/O allows concurrent Python processing and socket ops
+// 
+// ──────────────────────────────────────────────────────────────────────

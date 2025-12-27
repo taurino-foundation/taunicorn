@@ -1,4 +1,4 @@
 
-from ._taunicorn import connect,serve,Sender,Receiver
+from ._taunicorn import connect,server,Sender,Receiver
 
-__all__ = ["serve","connect","Sender","Receiver"]
+__all__ = ["server","connect","Sender","Receiver"]

@@ -49,7 +49,7 @@ use crate::channel::{ReceiverHandle, SenderHandle};
 /// - Writer task: Receives from Python via channel → writes to socket
 /// - Python handler: Receives SenderHandle/ReceiverHandle for bidirectional communication
 #[pyfunction]
-pub fn serve<'py>(
+pub fn server<'py>(
     py: Python<'py>,
     path: String,
     handler: Py<PyAny>,

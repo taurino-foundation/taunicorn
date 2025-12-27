@@ -70,7 +70,7 @@ async def connect(path: str, handler: Callable[[Sender, Receiver], Any]) -> typi
     """
     ...
 
-async def serve(
+async def server(
     path: str,
     handler: Callable[[Sender, Receiver], Any],
     sddl: Optional[str] = None
