@@ -69,15 +69,7 @@ jobs:
             --target ${{ matrix.target }} \
             --interpreter python${{ matrix.python }}
 
-      # FreeBSD
-      - name: Build wheel (FreeBSD)
-        if: matrix.target == 'x86_64-unknown-freebsd'
-        run: |
-          maturin build \
-            --release \
-            --strip \
-            --target x86_64-unknown-freebsd \
-            --interpreter python${{ matrix.python }}
+
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
