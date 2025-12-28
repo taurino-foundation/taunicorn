@@ -1,0 +1,87 @@
+name: Build wheels (cp39–cp312)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.target }} · cp${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        include:
+          # macOS ARM
+          - os: macos-14
+            target: aarch64-apple-darwin
+
+          # Windows
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+          # Linux glibc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+
+          # FreeBSD (cross)
+          - os: ubuntu-latest
+            target: x86_64-unknown-freebsd
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install maturin
+        run: pip install maturin
+
+      # Linux manylinux
+      - name: Build wheel (Linux)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          maturin build \
+            --release \
+            --strip \
+            --target ${{ matrix.target }} \
+            --manylinux auto \
+            --interpreter python${{ matrix.python }}
+
+      # macOS + Windows
+      - name: Build wheel (native)
+        if: matrix.target != 'x86_64-unknown-linux-gnu' && matrix.target != 'x86_64-unknown-freebsd'
+        run: |
+          maturin build \
+            --release \
+            --strip \
+            --target ${{ matrix.target }} \
+            --interpreter python${{ matrix.python }}
+
+      # FreeBSD cross-build
+      - name: Build wheel (FreeBSD)
+        if: matrix.target == 'x86_64-unknown-freebsd'
+        run: |
+          maturin build \
+            --release \
+            --strip \
+            --target x86_64-unknown-freebsd \
+            --interpreter python${{ matrix.python }} \
+            --no-manylinux
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.target }}-cp${{ matrix.python }}
+          path: target/wheels/*.whl
