@@ -40,7 +40,7 @@ async def handle_connection(sender, receiver):
 
 
 async def main():
-    await connect(r"\\.\pipe\example_ipc_pipe", handle_connection)
+    await connect("main_pipe_file", handle_connection)
 
 
 if __name__ == "__main__":

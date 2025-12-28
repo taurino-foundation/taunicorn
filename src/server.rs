@@ -51,10 +51,14 @@ use crate::channel::{ReceiverHandle, SenderHandle};
 #[pyfunction]
 pub fn server<'py>(
     py: Python<'py>,
-    path: String,
+    name: String,
     handler: Py<PyAny>,
     sddl: Option<String>,
 ) -> PyResult<Bound<'py, PyAny>> {
+    #[cfg(windows)]
+    let path = format!(r"\\.\pipe\{}", name);
+    #[cfg(unix)]
+    let path = format!("/tmp/{}", name);
     // Convert path to OS-specific filesystem name for local socket/pipe
     let name = PathBuf::from(path)
         .to_fs_name::<GenericFilePath>()

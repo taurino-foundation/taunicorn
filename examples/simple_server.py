@@ -15,10 +15,10 @@ async def handle_client(sender: Sender, receiver: Receiver):
 
 
 async def main():
-    pipe_name = r"\\.\pipe\example_ipc_pipe"
+    pipe_name = "main_pipe_file"
 
     await server(
-        path=pipe_name,
+        name=pipe_name,
         handler=handle_client,
         sddl=None
     )

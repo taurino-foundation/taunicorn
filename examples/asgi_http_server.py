@@ -66,7 +66,7 @@ async def handle_client(sender:Sender, receiver:Receiver):
 
 async def main():
     await server(
-        path=r"\\.\pipe\example_ipc_pipe",
+        name="main_pipe_file",
         handler=handle_client,
         sddl=None
     )

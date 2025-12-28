@@ -52,12 +52,12 @@ class Receiver:
         """
         ...
 
-async def connect(path: str, handler: Callable[[Sender, Receiver], Any]) -> typing.Awaitable[None]:
+async def connect(name: str, handler: Callable[[Sender, Receiver], Any]) -> typing.Awaitable[None]:
     """
     Connect to a local socket server.
 
     Args:
-        path: The filesystem path (Unix domain socket) or named pipe name (Windows).
+        name: The filesystem name (Unix domain socket) or named pipe name (Windows).
         handler: Callback function that receives Sender and Receiver objects.
                  Called when connection is established.
 
@@ -65,13 +65,13 @@ async def connect(path: str, handler: Callable[[Sender, Receiver], Any]) -> typi
         Awaitable that resolves when the connection is established and handler completes.
 
     Raises:
-        ValueError: If the path is invalid.
+        ValueError: If the name is invalid.
         RuntimeError: If connection fails.
     """
     ...
 
 async def server(
-    path: str,
+    name: str,
     handler: Callable[[Sender, Receiver], Any],
     sddl: Optional[str] = None
 ) -> typing.Awaitable[None]:
@@ -79,7 +79,7 @@ async def server(
     Start a local socket server and handle incoming connections.
 
     Args:
-        path: The filesystem path (Unix domain socket) or named pipe name (Windows).
+        name: The filesystem name (Unix domain socket) or named pipe name (Windows).
         handler: Callback function that receives Sender and Receiver objects for each connection.
         sddl: Windows-only: Security descriptor in SDDL format for the named pipe.
 
@@ -87,10 +87,10 @@ async def server(
         Awaitable that runs indefinitely, accepting connections.
 
     Raises:
-        ValueError: If the path is invalid or SDDL is malformed.
+        ValueError: If the name is invalid or SDDL is malformed.
         RuntimeError: If server creation fails.
     """
     ...
 
 __version__: str
-"""The version of the ipc_stream module."""
+"""The version of the taunicorn module."""

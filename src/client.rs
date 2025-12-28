@@ -56,10 +56,13 @@ use crate::channel::{ReceiverHandle, SenderHandle};
 #[pyfunction]
 pub fn connect<'py>(
     py: Python<'py>,               // Python interpreter context from PyO3
-    path: String,                  // Filesystem path to the socket
+    name: String,                  // Filesystem path to the socket
     handler: Py<PyAny>,            // Python callback function
 ) -> PyResult<Bound<'py, PyAny>> {
-    
+    #[cfg(windows)]
+    let path = format!(r"\\.\pipe\{}", name);
+    #[cfg(unix)]
+    let path = format!("/tmp/{}", name);
     // Convert the provided path to an OS-specific socket name
     // Example: "/tmp/mysocket" → "\\.\pipe\mysocket" (Windows) or keeps as-is (Unix)
     let name = PathBuf::from(path)
