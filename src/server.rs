@@ -3,8 +3,7 @@ use interprocess::local_socket::{
     GenericFilePath, ListenerOptions, ToFsName as _,
     traits::tokio::{Listener as _, Stream as _},
 };
-#[cfg(unix)]
-use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
+
 #[cfg(windows)]
 use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
 #[cfg(windows)]
@@ -17,8 +16,8 @@ use std::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::channel;
+#[cfg(windows)]
 use widestring::U16CString;
-
 use crate::channel::{ReceiverHandle, SenderHandle};
 
 /// # serve - Local Socket Server for Python Integration
@@ -55,6 +54,8 @@ pub fn server<'py>(
     handler: Py<PyAny>,
     sddl: Option<String>,
 ) -> PyResult<Bound<'py, PyAny>> {
+    #[cfg(not(windows))]
+    let _ = sddl;
     #[cfg(windows)]
     let path = format!(r"\\.\pipe\{}", name);
     #[cfg(unix)]
@@ -66,20 +67,20 @@ pub fn server<'py>(
         .into_owned();
 
     // Initialize listener configuration
-    let mut opts = ListenerOptions::new();
+    let opts = ListenerOptions::new();
 
     // Windows-specific security configuration using SDDL (Security Descriptor)
     #[cfg(windows)]
-    if let Some(sddl) = sddl {
+    let opts = if let Some(sddl) = sddl {
         // Convert SDDL string to Windows UCS-2 format
-        let sddl = U16CString::from_str(&sddl)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let sddl = U16CString::from_str(&sddl).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         // Parse security descriptor from SDDL string
-        let sd = SecurityDescriptor::deserialize(&sddl)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let sd = SecurityDescriptor::deserialize(&sddl)?;
         // Apply security descriptor to listener options
-        opts = opts.security_descriptor(sd);
-    }
+        opts.security_descriptor(sd)
+    } else {
+        opts
+    };
 
     // Convert async Rust future to Python awaitable using tokio runtime
     pyo3_async_runtimes::tokio::future_into_py::<_, Py<PyAny>>(py, async move {

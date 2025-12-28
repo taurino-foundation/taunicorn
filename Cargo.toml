@@ -40,6 +40,9 @@ libc = "0.2.178"
 [target.'cfg(windows)'.dependencies]
 widestring = "1.2.1"
 
+[target.windows.dependencies]
+widestring = "1.2.1"
+
 [dev-dependencies]
 dotenvy = "0.15.7"
 criterion = { version = "=0.7", features = ["async"] }
