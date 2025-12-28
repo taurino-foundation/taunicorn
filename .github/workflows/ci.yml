@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        python: ["3.9", "3.10", "3.11", "3.12","3.13"]
         include:
           # macOS ARM
           - os: macos-14
@@ -69,7 +69,7 @@ jobs:
             --target ${{ matrix.target }} \
             --interpreter python${{ matrix.python }}
 
-      # FreeBSD cross-build
+      # FreeBSD
       - name: Build wheel (FreeBSD)
         if: matrix.target == 'x86_64-unknown-freebsd'
         run: |
@@ -77,8 +77,7 @@ jobs:
             --release \
             --strip \
             --target x86_64-unknown-freebsd \
-            --interpreter python${{ matrix.python }} \
-            --no-manylinux
+            --interpreter python${{ matrix.python }}
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
