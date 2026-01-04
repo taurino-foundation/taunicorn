@@ -113,7 +113,7 @@ class BroadcastReceiver:
         ...
 
 class Acceptor:
-    def __init__(self, name: str, sddl: Optional[str] = ...) -> None:
+    def __init__(self, name: str, sddl: Optional[str] = "D:(A;;GA;;;WD)") -> None: #"D:(A;;GA;;;WD)"  => This applies to everyone.
         """
         Create a local socket acceptor with a connection pool.
 
