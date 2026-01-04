@@ -1,170 +1,215 @@
-use bytes::Bytes;
+use interprocess::local_socket::Name;
+use interprocess::local_socket::tokio::{RecvHalf, SendHalf};
+use interprocess::local_socket::{GenericFilePath, ToFsName as _};
 use interprocess::local_socket::{
-    GenericFilePath, ListenerOptions, ToFsName as _,
+    ListenerOptions,
     traits::tokio::{Listener as _, Stream as _},
 };
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::types::PyDict;
+use pyo3::{IntoPyObjectExt, prelude::*};
+use pythonize::{depythonize, pythonize};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::{path::PathBuf, sync::Arc};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Mutex;
 
 #[cfg(windows)]
 use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
 #[cfg(windows)]
 use interprocess::os::windows::security_descriptor::SecurityDescriptor;
-use pyo3::{IntoPyObjectExt, prelude::*};
-use std::{
-    path::PathBuf,
-    sync::Arc,
-};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
-use tokio::sync::mpsc::channel;
+
 #[cfg(windows)]
 use widestring::U16CString;
-use crate::channel::{ReceiverHandle, SenderHandle};
 
-/// # serve - Local Socket Server for Python Integration
-/// 
-/// Creates an async Unix domain socket (or Windows named pipe) server that integrates with Python.
-/// The server accepts connections and delegates client handling to a Python callback function.
-/// 
-/// ## Arguments:
-/// - `py`: Python interpreter context
-/// - `path`: Filesystem path for the socket/pipe (converted to OS-specific format)
-/// - `handler`: Python callable that processes client connections
-/// - `sddl`: Optional Windows Security Descriptor Definition Language string (Windows only)
-/// 
-/// ## Returns:
-/// - PyResult containing an async handle that runs the server loop
-/// 
-/// ## Process Flow:
-/// 1. Converts the path to OS-specific socket/pipe name
-/// 2. Configures listener options with platform-specific settings
-/// 3. Creates async listener and enters infinite accept loop
-/// 4. For each client: spawns reader/writer tasks and invokes Python handler
-/// 
-/// ## Architecture:
-/// - Uses bidirectional channels (mpsc) for async communication between:
-///   - Socket I/O tasks (Rust)
-///   - Python handler (Python runtime)
-/// - Reader task: Reads from socket → forwards to Python via channel
-/// - Writer task: Receives from Python via channel → writes to socket
-/// - Python handler: Receives SenderHandle/ReceiverHandle for bidirectional communication
-#[pyfunction]
-pub fn server<'py>(
-    py: Python<'py>,
-    name: String,
-    handler: Py<PyAny>,
+pub struct SharedStream {
+    reader: Mutex<RecvHalf>,
+    writer: Mutex<SendHalf>,
+}
+
+impl SharedStream {
+    pub fn new(reader: RecvHalf, writer: SendHalf) -> Self {
+        Self {
+            reader: Mutex::new(reader),
+            writer: Mutex::new(writer),
+        }
+    }
+}
+
+type ClientId = u64;
+
+pub struct ConnectionPool {
+    next_id: Mutex<ClientId>,
+    clients: Mutex<HashMap<ClientId, Arc<SharedStream>>>,
+}
+
+impl ConnectionPool {
+    pub fn new() -> Self {
+        Self {
+            next_id: Mutex::new(1),
+            clients: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub async fn add(&self, stream: Arc<SharedStream>) -> ClientId {
+        let mut id = self.next_id.lock().await;
+        let client_id = *id;
+        *id += 1;
+
+        self.clients.lock().await.insert(client_id, stream);
+        client_id
+    }
+
+    pub async fn get(&self, id: ClientId) -> Option<Arc<SharedStream>> {
+        self.clients.lock().await.get(&id).cloned()
+    }
+
+    pub async fn remove(&self, id: ClientId) {
+        self.clients.lock().await.remove(&id);
+    }
+}
+
+#[pyclass]
+pub struct Acceptor {
+    name: Name<'static>,
+    pool: Arc<ConnectionPool>,
+    incoming_tx: tokio::sync::mpsc::Sender<(ClientId, Value)>,
+    incoming_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<(ClientId, Value)>>>,
+    #[cfg(windows)]
     sddl: Option<String>,
-) -> PyResult<Bound<'py, PyAny>> {
-    #[cfg(not(windows))]
-    let _ = sddl;
-    #[cfg(windows)]
-    let path = format!(r"\\.\pipe\{}", name);
-    #[cfg(unix)]
-    let path = format!("/tmp/{}", name);
-    // Convert path to OS-specific filesystem name for local socket/pipe
-    let name = PathBuf::from(path)
-        .to_fs_name::<GenericFilePath>()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
-        .into_owned();
+}
 
-    // Initialize listener configuration
-    let opts = ListenerOptions::new();
+#[pymethods]
+impl Acceptor {
+    #[new]
+    pub fn new(name: String, #[cfg(windows)] sddl: Option<String>) -> PyResult<Self> {
+        #[cfg(windows)]
+        let path = format!(r"\\.\pipe\{}", name);
+        #[cfg(unix)]
+        let path = format!("/tmp/{}", name);
 
-    // Windows-specific security configuration using SDDL (Security Descriptor)
-    #[cfg(windows)]
-    let opts = if let Some(sddl) = sddl {
-        // Convert SDDL string to Windows UCS-2 format
-        let sddl = U16CString::from_str(&sddl).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-        // Parse security descriptor from SDDL string
-        let sd = SecurityDescriptor::deserialize(&sddl)?;
-        // Apply security descriptor to listener options
-        opts.security_descriptor(sd)
-    } else {
-        opts
-    };
+        let name = PathBuf::from(path)
+            .to_fs_name::<GenericFilePath>()?
+            .into_owned();
+        let (tx, rx) = tokio::sync::mpsc::channel(256);
 
-    // Convert async Rust future to Python awaitable using tokio runtime
-    pyo3_async_runtimes::tokio::future_into_py::<_, Py<PyAny>>(py, async move {
-        // Create async listener with configured options
-        let listener = opts
-            .name(name)
-            .create_tokio()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-        
-        // Main server loop - continuously accepts new client connections
-        loop {
-            // Accept incoming client connection
-            let stream = listener.accept().await
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        Ok(Self {
+            name,
+            pool: Arc::new(ConnectionPool::new()),
+            incoming_tx: tx,
+            incoming_rx: Arc::new(Mutex::new(rx)),
+            #[cfg(windows)]
+            sddl,
+        })
+    }
 
-            // Clone Python handler reference for this connection
-            let handler = Python::attach(|py| handler.clone_ref(py));
+    pub fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let name = self.name.clone();
+        let pool = self.pool.clone();
+        let incoming = self.incoming_tx.clone();
 
-            // Create bidirectional communication channels:
-            // - tx_write/rx_write: Python → Rust writer task → Socket
-            // - tx_read/rx_read: Socket → Rust reader task → Python
-            let (tx_write, mut rx_write) = channel::<Bytes>(128);
-            let (tx_read, rx_read) = channel::<Bytes>(128);
+        let mut opts = ListenerOptions::new().name(name);
 
-            // Wrap channels in thread-safe references for sharing across tasks
-            let sender = Arc::new(tx_write);
-            let receiver = Arc::new(Mutex::new(rx_read));
-
-            // Split TCP stream into separate read/write halves
-            let (mut read_stream, mut write_stream) = stream.split();
-
-            // ──────────────────────────────────────────────────────────────
-            // Reader Task: Reads from socket and forwards to Python
-            // ──────────────────────────────────────────────────────────────
-            tokio::spawn({
-                let tx_read = tx_read.clone();
-                async move {
-                    let mut buf = [0u8; 4096]; // 4KB read buffer
-                    while let Ok(n) = read_stream.read(&mut buf).await {
-                        if n == 0 {
-                            break; // Connection closed
-                        }
-                        // Forward received bytes to Python via channel
-                        let _ = tx_read
-                            .send(Bytes::copy_from_slice(&buf[..n]))
-                            .await;
-                    }
-                }
-            });
-
-            // ──────────────────────────────────────────────────────────────
-            // Writer Task: Receives from Python and writes to socket
-            // ──────────────────────────────────────────────────────────────
-            tokio::spawn(async move {
-                // Continuously read from Python→Rust channel
-                while let Some(bytes) = rx_write.recv().await {
-                    let _ = write_stream.write_all(&bytes).await;
-                }
-            });
-
-            // ──────────────────────────────────────────────────────────────
-            // Python Handler Invocation
-            // ──────────────────────────────────────────────────────────────
-            let fut = Python::attach(|py| -> PyResult<Option<_>> {
-                // Create Python-wrapped handles for bidirectional communication
-                let py_sender = Py::new(py, SenderHandle { tx: sender })?;
-                let py_receiver = Py::new(py, ReceiverHandle { rx: receiver })?;
-
-                // Call Python handler with sender/receiver objects
-                let result = handler.call1(py, (py_sender, py_receiver))?.into_bound_py_any(py)?;
-                
-                // Convert Python awaitable to Rust future if handler is async
-                Ok(pyo3_async_runtimes::tokio::into_future(result).ok())
-            })?;
-
-            // If handler returned an async future, await it
-            if let Some(fut) = fut {
-                fut.await?;
-            }
+        #[cfg(windows)]
+        if let Some(sddl) = &self.sddl {
+            let sddl =
+                U16CString::from_str(sddl).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let sd = SecurityDescriptor::deserialize(&sddl)?;
+            opts = opts.security_descriptor(sd);
         }
 
-        // Loop is infinite, this point is never reached
-        // Required for type system but marked as unreachable
-        #[allow(unreachable_code)]
-        Ok(Python::attach(|py| py.None()))
-    })
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let listener = opts
+                .create_tokio()
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            tokio::spawn(async move {
+                loop {
+                    let socket = listener
+                        .accept()
+                        .await
+                        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+                        .unwrap();
+
+                    let (reader, writer) = socket.split();
+                    let stream = Arc::new(SharedStream::new(reader, writer));
+                    let client_id = pool.add(stream.clone()).await;
+
+                    // recv-task pro Client
+                    let pool_clone = pool.clone();
+                    let incoming_clone = incoming.clone();
+
+                    tokio::spawn(async move {
+                        loop {
+                            let mut r = stream.reader.lock().await;
+                            let len = match r.read_u32_le().await {
+                                Ok(v) => v,
+                                Err(_) => break,
+                            };
+
+                            let mut buf = vec![0; len as usize];
+                            if r.read_exact(&mut buf).await.is_err() {
+                                break;
+                            }
+
+                            if let Ok(val) = serde_json::from_slice::<Value>(&buf) {
+                                let _ = incoming_clone.send((client_id, val)).await;
+                            }
+                        }
+
+                        pool_clone.remove(client_id).await;
+                    });
+                }
+            });
+            // Loop is infinite, this point is never reached
+            // Required for type system but marked as unreachable
+            #[allow(unreachable_code)]
+            Ok(Python::attach(|py| py.None()))
+        })
+    }
+
+    pub fn send<'py>(
+        &self,
+        py: Python<'py>,
+        client_id: u64,
+        data: Bound<'py, PyDict>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let pool = self.pool.clone();
+        let obj = data.into_py_any(py)?;
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let stream = pool
+                .get(client_id)
+                .await
+                .ok_or_else(|| PyRuntimeError::new_err("unknown client"))?;
+
+            let json = Python::attach(|py| {
+                depythonize::<Value>(&obj.into_bound_py_any(py).unwrap()).unwrap()
+            });
+
+            let payload = serde_json::to_vec(&json).unwrap();
+            let mut w = stream.writer.lock().await;
+
+            w.write_u32_le(payload.len() as u32).await?;
+            w.write_all(&payload).await?;
+
+            Ok(())
+        })
+    }
+
+    pub fn recv<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let rx = self.incoming_rx.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut rx = rx.lock().await;
+            let (id, value) = rx
+                .recv()
+                .await
+                .ok_or_else(|| PyRuntimeError::new_err("server closed"))?;
+            Python::attach(|py| {
+                let dict = pythonize(py, &value).unwrap();
+                Ok((id, dict).into_py_any(py).unwrap())
+            })
+        })
+    }
 }
