@@ -462,16 +462,16 @@ impl AsyncWrite for SocketStream {
     }
 }
 
-pub fn get_taunicorn_version() -> &'static str {
+/* pub fn get_taunicorn_version() -> &'static str {
     static VERSION: OnceLock<String> = OnceLock::new();
 
     VERSION.get_or_init(|| {
         let version = env!("CARGO_PKG_VERSION");
         version.replace("-alpha", "a").replace("-beta", "b")
     })
-}
+} */
 
-#[pymodule(gil_used = false)]
+/* #[pymodule(gil_used = false)]
 fn _taunicorn(_py: Python, module: &Bound<PyModule>) -> PyResult<()> {
     module.add("__version__", get_taunicorn_version())?;
     module.add_class::<Connector>()?;
@@ -480,4 +480,4 @@ fn _taunicorn(_py: Python, module: &Bound<PyModule>) -> PyResult<()> {
     module.add_class::<PyBroadcastChannel>()?;
     module.add_class::<PyBroadcastReceiver>()?;
     Ok(())
-}
+} */
