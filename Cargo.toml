@@ -1,0 +1,7 @@
+[workspace]
+resolver = "3"
+
+members = [
+    "crates/taunicorn-transport",
+    "crates/taunicorn-python",
+]

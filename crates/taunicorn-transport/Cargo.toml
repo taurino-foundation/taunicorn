@@ -1,0 +1,40 @@
+[package]
+name = "taunicorn-transport"
+version = "0.1.0"
+edition = "2024"
+
+description = "Cross-platform IPC transport infrastructure for Taunicorn"
+license = "MIT OR Apache-2.0"
+readme = "../../README.md"
+repository = "https://github.com/DEIN-NAME/taunicorn"
+
+keywords = [
+    "ipc",
+    "unix-socket",
+    "named-pipe",
+    "transport",
+]
+
+categories = [
+    "network-programming",
+    "os",
+]
+
+[dependencies]
+anyhow = "1.0.91"
+interprocess = {version = "2.2.3",default-features = false,features = ["tokio"]}
+tokio = {version = "1.48.0",default-features = false,features = ["io-util","sync","time","macros"]}
+tokio-util = {version = "0.7.17",default-features = false}
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.178"
+
+[target.'cfg(windows)'.dependencies]
+widestring = "1.2.1"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

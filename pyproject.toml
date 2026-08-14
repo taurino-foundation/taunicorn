@@ -1,0 +1,32 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "taunicorn"
+dynamic = ["version"]
+description = "Async local IPC byte-stream transport for Rust and Python."
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=0.23,<2",
+]
+
+[tool.maturin]
+manifest-path = "crates/taunicorn-python/Cargo.toml"
+bindings = "pyo3"
+python-source = "python"
+module-name = "taunicorn._taunicorn"
+

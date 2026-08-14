@@ -1,0 +1,1 @@
+Async Interprocess communication for Python programs that aims to expose as many platform-specific features as possible while maintaining a uniform interface for all platforms and encouraging portable, correct code.

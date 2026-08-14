@@ -1,0 +1,33 @@
+github: AriBermeki
+# Funding configuration for Taunicorn.
+#
+# Enable only funding providers that are actually configured for the project.
+# This file must live at:
+#
+#   .github/FUNDING.yml
+#
+# GitHub Sponsors:
+# github: YOUR_GITHUB_USERNAME
+#
+# Up to four GitHub Sponsors accounts are supported:
+# github: [USERNAME_1, USERNAME_2, USERNAME_3, USERNAME_4]
+#
+# External funding platforms:
+# patreon: YOUR_PATREON_USERNAME
+# open_collective: YOUR_OPEN_COLLECTIVE_NAME
+# ko_fi: YOUR_KOFI_USERNAME
+# liberapay: YOUR_LIBERAPAY_USERNAME
+# issuehunt: YOUR_ISSUEHUNT_USERNAME
+# community_bridge: YOUR_LFX_PROJECT_NAME
+# polar: YOUR_POLAR_USERNAME
+# buy_me_a_coffee: YOUR_BUY_ME_A_COFFEE_USERNAME
+# thanks_dev: u/gh/YOUR_GITHUB_USERNAME
+#
+# Tidelift supports PyPI package coordinates, so Taunicorn would use this
+# only if the project is actually registered there:
+# tidelift: pypi/taunicorn
+#
+# Up to four custom funding URLs:
+# custom:
+#   - "https://example.com/sponsor"
+#   - "https://example.com/donate"

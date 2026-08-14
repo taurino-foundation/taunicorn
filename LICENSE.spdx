@@ -1,0 +1,57 @@
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: taunicorn
+DocumentNamespace: https://spdx.org/spdxdocs/taunicorn-92f92d97-ea30-4d36-b768-c8e385716ca6
+
+Creator: Ari Bermeki
+Created: 2026-08-12T19:24:35Z
+
+DocumentComment: <text>
+This SPDX document describes the Taunicorn package at package level.
+Fields that cannot be established from authoritative project metadata are
+intentionally recorded as NOASSERTION rather than inferred.
+
+For release engineering, generate an artifact-specific SBOM in CI when file
+checksums, resolved dependencies, package version, source revision, supplier,
+copyright holder, and declared license are available.
+</text>
+
+##### Package: Taunicorn
+
+PackageName: taunicorn
+SPDXID: SPDXRef-Package-taunicorn
+PackageSupplier: NOASSERTION
+PackageOriginator: NOASSERTION
+PackageDownloadLocation: NOASSERTION
+FilesAnalyzed: false
+PackageHomePage: NOASSERTION
+PackageLicenseConcluded: NOASSERTION
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+
+PackageSummary: <text>
+Taunicorn is an asynchronous cross-platform local inter-process communication
+library for Rust and Python, built around named local endpoints and ordered
+full-duplex byte streams.
+</text>
+
+PackageDescription: <text>
+Taunicorn provides a small transport layer for communication between local
+processes. Its Rust implementation is asynchronous and Tokio-based, while the
+Python interface is exposed through PyO3.
+
+The transport operates on opaque ordered bytes and intentionally does not
+define message framing, serialization, RPC semantics, routing, persistence,
+acknowledgements, broker behavior, or application-level delivery guarantees.
+Each accepted connection represents an independent full-duplex byte stream.
+</text>
+
+PackageComment: <text>
+This package-level SPDX record is intentionally conservative. It does not claim
+file analysis, dependency completeness, license conclusions, or release-artifact
+checksums. Those properties should be populated by the release SBOM generation
+pipeline from the exact source revision and built artifacts.
+</text>
+
+Relationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package-taunicorn

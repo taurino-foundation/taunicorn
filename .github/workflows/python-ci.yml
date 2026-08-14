@@ -1,0 +1,164 @@
+name: Python CI
+
+on:
+  pull_request:
+    paths:
+      - "crates/taunicorn-python/**"
+      - "crates/taunicorn-transport/**"
+      - "python/**"
+      - "pyproject.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/python-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/taunicorn-python/**"
+      - "crates/taunicorn-transport/**"
+      - "python/**"
+      - "pyproject.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/python-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.18"
+  MATURIN_VERSION: "v1.11.5"
+
+jobs:
+  linux:
+    name: Linux / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          check-latest: false
+
+      - name: Build wheel from taunicorn-python crate
+        uses: PyO3/maturin-action@86b9d133d34bc1b40018696f782949dac11bd380 # v1.49.4
+        with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          command: build
+          manylinux: "off"
+          rust-toolchain: stable
+          args: >-
+            --release
+            --locked
+            --manifest-path crates/taunicorn-python/Cargo.toml
+            --out dist
+            -i python
+
+      - name: Install wheel and test dependency
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          python -m pip install --disable-pip-version-check --force-reinstall "$wheel" pytest
+
+      - name: Test asyncio / Tokio bridge
+        run: python -m pytest -q python/tests/test_local_socket_asyncio.py
+
+  native:
+    name: ${{ matrix.name }} / Python 3.14
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86_64
+            os: windows-latest
+          - name: macOS x86_64
+            os: macos-15-intel
+          - name: macOS aarch64
+            os: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          check-latest: false
+
+      - name: Build native wheel
+        uses: PyO3/maturin-action@86b9d133d34bc1b40018696f782949dac11bd380 # v1.49.4
+        with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          command: build
+          rust-toolchain: stable
+          args: >-
+            --release
+            --locked
+            --manifest-path crates/taunicorn-python/Cargo.toml
+            --out dist
+            -i python
+
+      - name: Install wheel and test dependency
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          python -m pip install --disable-pip-version-check --force-reinstall "$wheel" pytest
+
+      - name: Test asyncio / Tokio bridge
+        run: python -m pytest -q python/tests/test_local_socket_asyncio.py
+
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: "false"
+
+      - name: Install Rust stable
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build sdist from root pyproject
+        shell: bash
+        run: |
+          printf 'maturin==%s\n' "${MATURIN_VERSION#v}" > /tmp/build-constraints.txt
+          uv build --sdist --build-constraint /tmp/build-constraints.txt
+
+      - name: Install and test sdist
+        shell: bash
+        run: |
+          sdist="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          test -n "$sdist"
+          uv run --isolated --no-project --python 3.14 --with "$sdist" --with pytest \
+            python -m pytest -q python/tests/test_local_socket_asyncio.py

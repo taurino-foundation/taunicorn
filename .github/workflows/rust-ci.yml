@@ -1,0 +1,103 @@
+name: Rust CI
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rustfmt.toml"
+      - ".github/workflows/rust-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rustfmt.toml"
+      - ".github/workflows/rust-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  quality:
+    name: Format / Check / Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14 for PyO3 detection
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          check-latest: false
+
+      - name: Install Rust stable
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check transport crate
+        run: cargo check --manifest-path crates/taunicorn-transport/Cargo.toml --all-targets --locked
+
+      - name: Check PyO3 crate
+        env:
+          PYO3_PYTHON: python
+        run: cargo check --manifest-path crates/taunicorn-python/Cargo.toml --all-targets --locked
+
+      - name: Clippy transport crate
+        run: cargo clippy --manifest-path crates/taunicorn-transport/Cargo.toml --all-targets --locked -- -D warnings
+
+      - name: Clippy PyO3 crate
+        env:
+          PYO3_PYTHON: python
+        run: cargo clippy --manifest-path crates/taunicorn-python/Cargo.toml --all-targets --locked -- -D warnings
+
+  transport-tests:
+    name: Transport tests / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+          - name: Windows
+            os: windows-latest
+          - name: macOS Intel
+            os: macos-15-intel
+          - name: macOS ARM64
+            os: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Test transport crate
+        run: cargo test --manifest-path crates/taunicorn-transport/Cargo.toml --all-targets --locked
