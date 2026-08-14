@@ -1,0 +1,27 @@
+name: Bug report
+description: Report a reproducible defect
+title: "[Bug]: "
+labels:
+  - "type:fix"
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happened, and what should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal reproducible steps, commands, or code.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python/Rust versions, Taunicorn version, and other relevant details.
+    validations:
+      required: false
