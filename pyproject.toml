@@ -28,8 +28,8 @@ dependencies = []
 
 [project.optional-dependencies]
 test = [
-    "pytest>=8,<10",
-    "pytest-asyncio>=0.23,<2",
+    "pytest>=9.1.1,<10",
+    "pytest-asyncio>=1.4.0,<2",
 ]
 
 [tool.maturin]
