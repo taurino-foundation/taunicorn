@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - "crates/taunicorn-python/**"
-      - "crates/taunicorn-transport/**"
+      - "crates/taunicorn/**"
       - "python/**"
       - "pyproject.toml"
       - "Cargo.toml"
@@ -14,7 +14,7 @@ on:
     branches: [main]
     paths:
       - "crates/taunicorn-python/**"
-      - "crates/taunicorn-transport/**"
+      - "crates/taunicorn/**"
       - "python/**"
       - "pyproject.toml"
       - "Cargo.toml"

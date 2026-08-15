@@ -12,4 +12,4 @@ crate-type = ["cdylib"]
 pyo3 = {version = "=0.29", default-features = false, features = ["abi3-py310","anyhow","bytes","extension-module","generate-import-lib","macros"]}
 pyo3-async-runtimes = {version = "0.29", default-features = false, features = ["tokio-runtime"]}
 anyhow = "1.0.91"
-taunicorn-transport = {path = "../taunicorn-transport"}
+taunicorn = { path = "../taunicorn" }

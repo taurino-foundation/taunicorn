@@ -1,16 +1,14 @@
-//! PyO3 / asyncio bindings for `local_socket_struct`.
+//! PyO3 / asyncio bindings for `local__struct`.
 //!
 //! Python owns and drives its `asyncio` event loop. Rust async I/O runs on the Tokio runtime
 //! managed by `pyo3-async-runtimes`. This module does not duplicate the transport state machine:
-//! `SocketServer`, `SocketConnection`, `SocketReadHalf`, and `SocketWriteHalf` remain the source of
+//! `Server`, `Connection`, `ReadHalf`, and `WriteHalf` remain the source of
 //! truth for connection state, EOF, half-close, ordering, and cancellation semantics.
 
-use taunicorn_transport::{
-    LocalSocketTransport as RustLocalSocketTransport, ReceiveResult,
-    SocketConnection as RustSocketConnection, SocketConnectionInfo as RustSocketConnectionInfo,
-    SocketEndpoint as RustSocketEndpoint, SocketReadHalf as RustSocketReadHalf,
-    SocketServer as RustSocketServer, SocketServerInfo as RustSocketServerInfo,
-    SocketWriteHalf as RustSocketWriteHalf,
+use taunicorn::{
+    Connection as RustConnection, ConnectionInfo as RustConnectionInfo, Endpoint as RustEndpoint,
+    LocalTransport as RustLocalTransport, ReadHalf as RustReadHalf, ReceiveResult,
+    Server as RustServer, ServerInfo as RustServerInfo, WriteHalf as RustWriteHalf,
 };
 
 use pyo3::exceptions::{
@@ -29,7 +27,7 @@ use std::{
 // Shared conversion helpers
 // -------------------------------------------------------------------------------------------------
 
-/// Transitional mapping while `local_socket_struct` still exposes `anyhow::Error` publicly.
+/// Transitional mapping while `local__struct` still exposes `anyhow::Error` publicly.
 ///
 /// Once the transport has a typed public error enum this should become a direct enum -> Python
 /// exception mapping instead of inspecting error strings.
@@ -62,26 +60,23 @@ fn duration_from_seconds(seconds: f64) -> PyResult<Duration> {
     })
 }
 
-fn endpoint_from_py(value: &Bound<'_, PyAny>) -> PyResult<RustSocketEndpoint> {
-    if let Ok(endpoint) = value.extract::<PyRef<'_, PySocketEndpoint>>() {
+fn endpoint_from_py(value: &Bound<'_, PyAny>) -> PyResult<RustEndpoint> {
+    if let Ok(endpoint) = value.extract::<PyRef<'_, PyEndpoint>>() {
         return Ok(endpoint.inner.clone());
     }
 
     if let Ok(name) = value.extract::<String>() {
-        return RustSocketEndpoint::new(name).map_err(to_py_err);
+        return RustEndpoint::new(name).map_err(to_py_err);
     }
 
-    Err(PyTypeError::new_err("endpoint must be a str or SocketEndpoint"))
+    Err(PyTypeError::new_err("endpoint must be a str or Endpoint"))
 }
 
 fn bytes_to_python(data: &[u8]) -> PyResult<Py<PyAny>> {
     Python::attach(|py| Ok(PyBytes::new(py, data).into_any().unbind()))
 }
 
-async fn receive_bytes(
-    connection: Arc<RustSocketConnection>,
-    max_bytes: usize,
-) -> PyResult<Vec<u8>> {
+async fn receive_bytes(connection: Arc<RustConnection>, max_bytes: usize) -> PyResult<Vec<u8>> {
     if max_bytes == 0 {
         return Ok(Vec::new());
     }
@@ -96,10 +91,7 @@ async fn receive_bytes(
     }
 }
 
-async fn receive_half_bytes(
-    reader: Arc<RustSocketReadHalf>,
-    max_bytes: usize,
-) -> PyResult<Vec<u8>> {
+async fn receive_half_bytes(reader: Arc<RustReadHalf>, max_bytes: usize) -> PyResult<Vec<u8>> {
     if max_bytes == 0 {
         return Ok(Vec::new());
     }
@@ -118,11 +110,11 @@ async fn receive_half_bytes(
 // that is dangerous: Python may not know whether a prefix was already accepted locally. Closing the
 // connection on cancellation prevents a blind retry of the complete buffer from duplicating bytes.
 struct CloseConnectionUnlessCompleted {
-    connection: Option<Arc<RustSocketConnection>>,
+    connection: Option<Arc<RustConnection>>,
 }
 
 impl CloseConnectionUnlessCompleted {
-    fn new(connection: Arc<RustSocketConnection>) -> Self {
+    fn new(connection: Arc<RustConnection>) -> Self {
         Self { connection: Some(connection) }
     }
 
@@ -144,11 +136,11 @@ impl Drop for CloseConnectionUnlessCompleted {
 }
 
 struct ShutdownWriteUnlessCompleted {
-    writer: Option<Arc<RustSocketWriteHalf>>,
+    writer: Option<Arc<RustWriteHalf>>,
 }
 
 impl ShutdownWriteUnlessCompleted {
-    fn new(writer: Arc<RustSocketWriteHalf>) -> Self {
+    fn new(writer: Arc<RustWriteHalf>) -> Self {
         Self { writer: Some(writer) }
     }
 
@@ -173,23 +165,23 @@ impl Drop for ShutdownWriteUnlessCompleted {
 // Value / diagnostic classes
 // -------------------------------------------------------------------------------------------------
 
-#[pyclass(name = "SocketEndpoint", frozen, skip_from_py_object)]
+#[pyclass(name = "Endpoint", frozen, skip_from_py_object)]
 #[derive(Clone)]
-pub struct PySocketEndpoint {
-    inner: RustSocketEndpoint,
+pub struct PyEndpoint {
+    inner: RustEndpoint,
 }
 
-impl PySocketEndpoint {
-    fn from_rust(inner: RustSocketEndpoint) -> Self {
+impl PyEndpoint {
+    fn from_rust(inner: RustEndpoint) -> Self {
         Self { inner }
     }
 }
 
 #[pymethods]
-impl PySocketEndpoint {
+impl PyEndpoint {
     #[new]
     pub fn new(name: String) -> PyResult<Self> {
-        Ok(Self { inner: RustSocketEndpoint::new(name).map_err(to_py_err)? })
+        Ok(Self { inner: RustEndpoint::new(name).map_err(to_py_err)? })
     }
 
     #[getter]
@@ -202,13 +194,13 @@ impl PySocketEndpoint {
     }
 
     pub fn __repr__(&self) -> String {
-        format!("SocketEndpoint({:?})", self.inner.as_str())
+        format!("Endpoint({:?})", self.inner.as_str())
     }
 }
 
-#[pyclass(name = "SocketConnectionInfo", frozen, skip_from_py_object)]
+#[pyclass(name = "ConnectionInfo", frozen, skip_from_py_object)]
 #[derive(Clone)]
-pub struct PySocketConnectionInfo {
+pub struct PyConnectionInfo {
     #[pyo3(get)]
     pub id: u64,
     #[pyo3(get)]
@@ -225,8 +217,8 @@ pub struct PySocketConnectionInfo {
     pub peer_sent_eof: bool,
 }
 
-impl From<RustSocketConnectionInfo> for PySocketConnectionInfo {
-    fn from(info: RustSocketConnectionInfo) -> Self {
+impl From<RustConnectionInfo> for PyConnectionInfo {
+    fn from(info: RustConnectionInfo) -> Self {
         Self {
             id: info.id,
             local_endpoint: info.local_endpoint.map(|endpoint| endpoint.to_string()),
@@ -240,10 +232,10 @@ impl From<RustSocketConnectionInfo> for PySocketConnectionInfo {
 }
 
 #[pymethods]
-impl PySocketConnectionInfo {
+impl PyConnectionInfo {
     pub fn __repr__(&self) -> String {
         format!(
-            "SocketConnectionInfo(id={}, local_endpoint={:?}, peer_endpoint={:?}, closed={}, read_shutdown={}, write_shutdown={}, peer_sent_eof={})",
+            "ConnectionInfo(id={}, local_endpoint={:?}, peer_endpoint={:?}, closed={}, read_shutdown={}, write_shutdown={}, peer_sent_eof={})",
             self.id,
             self.local_endpoint,
             self.peer_endpoint,
@@ -255,9 +247,9 @@ impl PySocketConnectionInfo {
     }
 }
 
-#[pyclass(name = "SocketServerInfo", frozen, skip_from_py_object)]
+#[pyclass(name = "ServerInfo", frozen, skip_from_py_object)]
 #[derive(Clone)]
-pub struct PySocketServerInfo {
+pub struct PyServerInfo {
     #[pyo3(get)]
     pub local_endpoint: String,
     #[pyo3(get)]
@@ -266,8 +258,8 @@ pub struct PySocketServerInfo {
     pub is_paused: bool,
 }
 
-impl From<RustSocketServerInfo> for PySocketServerInfo {
-    fn from(info: RustSocketServerInfo) -> Self {
+impl From<RustServerInfo> for PyServerInfo {
+    fn from(info: RustServerInfo) -> Self {
         Self {
             local_endpoint: info.local_endpoint.to_string(),
             is_stopped: info.is_stopped,
@@ -277,36 +269,36 @@ impl From<RustSocketServerInfo> for PySocketServerInfo {
 }
 
 #[pymethods]
-impl PySocketServerInfo {
+impl PyServerInfo {
     pub fn __repr__(&self) -> String {
         format!(
-            "SocketServerInfo(local_endpoint={:?}, stopped={}, paused={})",
+            "ServerInfo(local_endpoint={:?}, stopped={}, paused={})",
             self.local_endpoint, self.is_stopped, self.is_paused,
         )
     }
 }
 
 // -------------------------------------------------------------------------------------------------
-// SocketServer
+// Server
 // -------------------------------------------------------------------------------------------------
 
-#[pyclass(name = "SocketServer")]
-pub struct PySocketServer {
-    inner: Arc<RustSocketServer>,
+#[pyclass(name = "Server")]
+pub struct PyServer {
+    inner: Arc<RustServer>,
 }
 
-impl PySocketServer {
-    fn from_rust(inner: RustSocketServer) -> Self {
+impl PyServer {
+    fn from_rust(inner: RustServer) -> Self {
         Self { inner: Arc::new(inner) }
     }
 }
 
 #[pymethods]
-impl PySocketServer {
+impl PyServer {
     /// Start a server with default platform permissions/security settings.
     ///
     /// Python:
-    ///     server = await SocketServer.start("my-app")
+    ///     server = await Server.start("my-app")
     #[staticmethod]
     pub fn start<'py>(
         py: Python<'py>,
@@ -315,8 +307,8 @@ impl PySocketServer {
         let endpoint = endpoint_from_py(&endpoint)?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let server = RustSocketServer::start(endpoint).await.map_err(to_py_err)?;
-            Python::attach(|py| Py::new(py, PySocketServer::from_rust(server)))
+            let server = RustServer::start(endpoint).await.map_err(to_py_err)?;
+            Python::attach(|py| Py::new(py, PyServer::from_rust(server)))
         })
     }
 
@@ -341,8 +333,8 @@ impl PySocketServer {
         };
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let server = RustSocketServer::bind(&name, parsed_mode).await.map_err(to_py_err)?;
-            Python::attach(|py| Py::new(py, PySocketServer::from_rust(server)))
+            let server = RustServer::bind(&name, parsed_mode).await.map_err(to_py_err)?;
+            Python::attach(|py| Py::new(py, PyServer::from_rust(server)))
         })
     }
 
@@ -352,7 +344,7 @@ impl PySocketServer {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let connection = server.accept().await.map_err(to_py_err)?;
-            Python::attach(|py| Py::new(py, PySocketConnection::from_rust(connection)))
+            Python::attach(|py| Py::new(py, PyConnection::from_rust(connection)))
         })
     }
 
@@ -366,7 +358,7 @@ impl PySocketServer {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let connection = server.accept_timeout(timeout).await.map_err(to_py_err)?;
-            Python::attach(|py| Py::new(py, PySocketConnection::from_rust(connection)))
+            Python::attach(|py| Py::new(py, PyConnection::from_rust(connection)))
         })
     }
 
@@ -378,7 +370,7 @@ impl PySocketServer {
         })
     }
 
-    /// Synchronous compatibility alias mirroring `SocketServer::close()`.
+    /// Synchronous compatibility alias mirroring `Server::close()`.
     pub fn close(&self) {
         self.inner.close();
     }
@@ -417,17 +409,17 @@ impl PySocketServer {
     }
 
     #[getter]
-    pub fn endpoint(&self, py: Python<'_>) -> PyResult<Py<PySocketEndpoint>> {
-        Py::new(py, PySocketEndpoint::from_rust(self.inner.endpoint().clone()))
+    pub fn endpoint(&self, py: Python<'_>) -> PyResult<Py<PyEndpoint>> {
+        Py::new(py, PyEndpoint::from_rust(self.inner.endpoint().clone()))
     }
 
-    pub fn info(&self, py: Python<'_>) -> PyResult<Py<PySocketServerInfo>> {
-        Py::new(py, PySocketServerInfo::from(self.inner.info()))
+    pub fn info(&self, py: Python<'_>) -> PyResult<Py<PyServerInfo>> {
+        Py::new(py, PyServerInfo::from(self.inner.info()))
     }
 
     pub fn __repr__(&self) -> String {
         format!(
-            "SocketServer(name={:?}, started={}, paused={}, stopped={}, accepting={})",
+            "Server(name={:?}, started={}, paused={}, stopped={}, accepting={})",
             self.inner.name(),
             self.inner.is_started(),
             self.inner.is_paused(),
@@ -438,40 +430,39 @@ impl PySocketServer {
 }
 
 // -------------------------------------------------------------------------------------------------
-// SocketConnection
+// Connection
 // -------------------------------------------------------------------------------------------------
 
-#[pyclass(name = "SocketConnection")]
-pub struct PySocketConnection {
+#[pyclass(name = "Connection")]
+pub struct PyConnection {
     // The Option exists only to model Rust's consuming `into_split(self)` operation. It is not a
     // second transport state machine. I/O futures clone the Arc briefly and never hold this mutex
     // across `.await`, so receive and send remain fully duplex.
-    inner: StdMutex<Option<Arc<RustSocketConnection>>>,
+    inner: StdMutex<Option<Arc<RustConnection>>>,
 }
 
-impl PySocketConnection {
-    fn from_rust(inner: RustSocketConnection) -> Self {
+impl PyConnection {
+    fn from_rust(inner: RustConnection) -> Self {
         Self { inner: StdMutex::new(Some(Arc::new(inner))) }
     }
 
-    fn connection(&self) -> PyResult<Arc<RustSocketConnection>> {
+    fn connection(&self) -> PyResult<Arc<RustConnection>> {
         self.inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("socket connection wrapper state is poisoned"))?
+            .map_err(|_| PyRuntimeError::new_err(" connection wrapper state is poisoned"))?
             .as_ref()
             .cloned()
-            .ok_or_else(|| {
-                PyRuntimeError::new_err("SocketConnection was consumed by into_split()")
-            })
+            .ok_or_else(|| PyRuntimeError::new_err("Connection was consumed by into_split()"))
     }
 
-    fn take_for_split(&self) -> PyResult<RustSocketConnection> {
-        let mut guard = self.inner.lock().map_err(|_| {
-            PyRuntimeError::new_err("socket connection wrapper state is poisoned")
-        })?;
+    fn take_for_split(&self) -> PyResult<RustConnection> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err(" connection wrapper state is poisoned"))?;
 
         let connection = guard.take().ok_or_else(|| {
-            PyRuntimeError::new_err("SocketConnection was already consumed by into_split()")
+            PyRuntimeError::new_err("Connection was already consumed by into_split()")
         })?;
 
         match Arc::try_unwrap(connection) {
@@ -479,7 +470,7 @@ impl PySocketConnection {
             Err(connection) => {
                 *guard = Some(connection);
                 Err(PyRuntimeError::new_err(
-                    "cannot split SocketConnection while an async operation is still pending",
+                    "cannot split Connection while an async operation is still pending",
                 ))
             }
         }
@@ -487,7 +478,7 @@ impl PySocketConnection {
 }
 
 #[pymethods]
-impl PySocketConnection {
+impl PyConnection {
     #[staticmethod]
     pub fn connect<'py>(
         py: Python<'py>,
@@ -496,8 +487,8 @@ impl PySocketConnection {
         let endpoint = endpoint_from_py(&endpoint)?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let connection = RustSocketConnection::connect(endpoint).await.map_err(to_py_err)?;
-            Python::attach(|py| Py::new(py, PySocketConnection::from_rust(connection)))
+            let connection = RustConnection::connect(endpoint).await.map_err(to_py_err)?;
+            Python::attach(|py| Py::new(py, PyConnection::from_rust(connection)))
         })
     }
 
@@ -511,10 +502,9 @@ impl PySocketConnection {
         let timeout = duration_from_seconds(timeout)?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let connection = RustSocketConnection::connect_timeout(endpoint, timeout)
-                .await
-                .map_err(to_py_err)?;
-            Python::attach(|py| Py::new(py, PySocketConnection::from_rust(connection)))
+            let connection =
+                RustConnection::connect_timeout(endpoint, timeout).await.map_err(to_py_err)?;
+            Python::attach(|py| Py::new(py, PyConnection::from_rust(connection)))
         })
     }
 
@@ -557,7 +547,7 @@ impl PySocketConnection {
         })
     }
 
-    /// Send the complete buffer. Same-direction sends are serialized by `SocketConnection`.
+    /// Send the complete buffer. Same-direction sends are serialized by `Connection`.
     pub fn send<'py>(&self, py: Python<'py>, data: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
         let connection = self.connection()?;
 
@@ -672,16 +662,13 @@ impl PySocketConnection {
     ///
     /// This is synchronous because splitting itself performs no I/O. It fails if another async
     /// operation still holds a temporary Arc to the connection.
-    pub fn into_split(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<(Py<PySocketReadHalf>, Py<PySocketWriteHalf>)> {
+    pub fn into_split(&self, py: Python<'_>) -> PyResult<(Py<PyReadHalf>, Py<PyWriteHalf>)> {
         let connection = self.take_for_split()?;
         let (reader, writer) = connection.into_split();
 
         Ok((
-            Py::new(py, PySocketReadHalf { inner: Arc::new(reader) })?,
-            Py::new(py, PySocketWriteHalf { inner: Arc::new(writer) })?,
+            Py::new(py, PyReadHalf { inner: Arc::new(reader) })?,
+            Py::new(py, PyWriteHalf { inner: Arc::new(writer) })?,
         ))
     }
 
@@ -742,9 +729,9 @@ impl PySocketConnection {
     }
 
     #[getter]
-    pub fn endpoint(&self, py: Python<'_>) -> PyResult<Py<PySocketEndpoint>> {
+    pub fn endpoint(&self, py: Python<'_>) -> PyResult<Py<PyEndpoint>> {
         let connection = self.connection()?;
-        Py::new(py, PySocketEndpoint::from_rust(connection.endpoint().clone()))
+        Py::new(py, PyEndpoint::from_rust(connection.endpoint().clone()))
     }
 
     #[getter]
@@ -757,14 +744,14 @@ impl PySocketConnection {
         Ok(self.connection()?.peer_endpoint().map(|endpoint| endpoint.to_string()))
     }
 
-    pub fn info(&self, py: Python<'_>) -> PyResult<Py<PySocketConnectionInfo>> {
-        Py::new(py, PySocketConnectionInfo::from(self.connection()?.info()))
+    pub fn info(&self, py: Python<'_>) -> PyResult<Py<PyConnectionInfo>> {
+        Py::new(py, PyConnectionInfo::from(self.connection()?.info()))
     }
 
     pub fn __repr__(&self) -> String {
         match self.connection() {
             Ok(connection) => format!(
-                "SocketConnection(id={}, name={:?}, closed={}, paused={}, read_shutdown={}, write_shutdown={}, at_eof={})",
+                "Connection(id={}, name={:?}, closed={}, paused={}, read_shutdown={}, write_shutdown={}, at_eof={})",
                 connection.id(),
                 connection.name(),
                 connection.is_closed(),
@@ -773,7 +760,7 @@ impl PySocketConnection {
                 connection.is_write_shutdown(),
                 connection.peer_sent_eof(),
             ),
-            Err(_) => "SocketConnection(consumed_by_into_split=True)".to_owned(),
+            Err(_) => "Connection(consumed_by_into_split=True)".to_owned(),
         }
     }
 }
@@ -782,13 +769,13 @@ impl PySocketConnection {
 // Concrete directional halves
 // -------------------------------------------------------------------------------------------------
 
-#[pyclass(name = "SocketReadHalf")]
-pub struct PySocketReadHalf {
-    inner: Arc<RustSocketReadHalf>,
+#[pyclass(name = "ReadHalf")]
+pub struct PyReadHalf {
+    inner: Arc<RustReadHalf>,
 }
 
 #[pymethods]
-impl PySocketReadHalf {
+impl PyReadHalf {
     pub fn receive<'py>(&self, py: Python<'py>, max_bytes: usize) -> PyResult<Bound<'py, PyAny>> {
         let reader = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -813,22 +800,22 @@ impl PySocketReadHalf {
         self.inner.id()
     }
 
-    pub fn info(&self, py: Python<'_>) -> PyResult<Py<PySocketConnectionInfo>> {
-        Py::new(py, PySocketConnectionInfo::from(self.inner.info()))
+    pub fn info(&self, py: Python<'_>) -> PyResult<Py<PyConnectionInfo>> {
+        Py::new(py, PyConnectionInfo::from(self.inner.info()))
     }
 
     pub fn __repr__(&self) -> String {
-        format!("SocketReadHalf(id={})", self.inner.id())
+        format!("ReadHalf(id={})", self.inner.id())
     }
 }
 
-#[pyclass(name = "SocketWriteHalf")]
-pub struct PySocketWriteHalf {
-    inner: Arc<RustSocketWriteHalf>,
+#[pyclass(name = "WriteHalf")]
+pub struct PyWriteHalf {
+    inner: Arc<RustWriteHalf>,
 }
 
 #[pymethods]
-impl PySocketWriteHalf {
+impl PyWriteHalf {
     pub fn send<'py>(&self, py: Python<'py>, data: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
         let writer = Arc::clone(&self.inner);
 
@@ -879,12 +866,12 @@ impl PySocketWriteHalf {
         self.inner.id()
     }
 
-    pub fn info(&self, py: Python<'_>) -> PyResult<Py<PySocketConnectionInfo>> {
-        Py::new(py, PySocketConnectionInfo::from(self.inner.info()))
+    pub fn info(&self, py: Python<'_>) -> PyResult<Py<PyConnectionInfo>> {
+        Py::new(py, PyConnectionInfo::from(self.inner.info()))
     }
 
     pub fn __repr__(&self) -> String {
-        format!("SocketWriteHalf(id={})", self.inner.id())
+        format!("WriteHalf(id={})", self.inner.id())
     }
 }
 
@@ -892,11 +879,11 @@ impl PySocketWriteHalf {
 // Concrete transport namespace
 // -------------------------------------------------------------------------------------------------
 
-#[pyclass(name = "LocalSocketTransport")]
-pub struct PyLocalSocketTransport;
+#[pyclass(name = "LocalTransport")]
+pub struct PyLocalTransport;
 
 #[pymethods]
-impl PyLocalSocketTransport {
+impl PyLocalTransport {
     #[staticmethod]
     pub fn start<'py>(
         py: Python<'py>,
@@ -905,8 +892,8 @@ impl PyLocalSocketTransport {
         let endpoint = endpoint_from_py(&endpoint)?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let server = RustLocalSocketTransport::start(endpoint).await.map_err(to_py_err)?;
-            Python::attach(|py| Py::new(py, PySocketServer::from_rust(server)))
+            let server = RustLocalTransport::start(endpoint).await.map_err(to_py_err)?;
+            Python::attach(|py| Py::new(py, PyServer::from_rust(server)))
         })
     }
 
@@ -918,9 +905,8 @@ impl PyLocalSocketTransport {
         let endpoint = endpoint_from_py(&endpoint)?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let connection =
-                RustLocalSocketTransport::connect(endpoint).await.map_err(to_py_err)?;
-            Python::attach(|py| Py::new(py, PySocketConnection::from_rust(connection)))
+            let connection = RustLocalTransport::connect(endpoint).await.map_err(to_py_err)?;
+            Python::attach(|py| Py::new(py, PyConnection::from_rust(connection)))
         })
     }
 }
@@ -942,20 +928,20 @@ pub fn get_taunicorn_version() -> &'static str {
 pub fn _taunicorn(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", get_taunicorn_version())?;
 
-    m.add_class::<PySocketEndpoint>()?;
-    m.add_class::<PySocketConnectionInfo>()?;
-    m.add_class::<PySocketServerInfo>()?;
-    m.add_class::<PySocketServer>()?;
-    m.add_class::<PySocketConnection>()?;
-    m.add_class::<PySocketReadHalf>()?;
-    m.add_class::<PySocketWriteHalf>()?;
-    m.add_class::<PyLocalSocketTransport>()?;
+    m.add_class::<PyEndpoint>()?;
+    m.add_class::<PyConnectionInfo>()?;
+    m.add_class::<PyServerInfo>()?;
+    m.add_class::<PyServer>()?;
+    m.add_class::<PyConnection>()?;
+    m.add_class::<PyReadHalf>()?;
+    m.add_class::<PyWriteHalf>()?;
+    m.add_class::<PyLocalTransport>()?;
 
     // Compatibility aliases for the previous Python-facing names. They refer to the new concrete
     // classes; no legacy wrapper implementation remains.
-    m.add("SocketListener", m.getattr("SocketServer")?)?;
-    m.add("SocketStream", m.getattr("SocketConnection")?)?;
-    m.add("SocketClient", m.getattr("SocketConnection")?)?;
+    m.add("Listener", m.getattr("Server")?)?;
+    m.add("Stream", m.getattr("Connection")?)?;
+    m.add("Client", m.getattr("Connection")?)?;
 
     Ok(())
 }
