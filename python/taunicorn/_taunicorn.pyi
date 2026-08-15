@@ -15,29 +15,25 @@ import sys
 from collections.abc import Awaitable, Sequence
 from typing import TypeAlias, final
 
-
 __version__: str
-
 
 # ---------------------------------------------------------------------------
 # Internal typing helpers
 # ---------------------------------------------------------------------------
 
-_EndpointLike: TypeAlias = str | "SocketEndpoint"
+_EndpointLike: TypeAlias = str | "Endpoint"
 
 # PyO3 extracts Vec[u8] from bytes, bytearray, and compatible integer
 # sequences. Individual integer elements must fit into the unsigned-byte
 # range accepted by the native binding.
 _BytesLike: TypeAlias = bytes | bytearray | memoryview | Sequence[int]
 
-
 # ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
 
-
 @final
-class SocketEndpoint:
+class Endpoint:
     """
     Logical name of a local IPC endpoint.
 
@@ -56,7 +52,6 @@ class SocketEndpoint:
     """
 
     def __init__(self, name: str) -> None: ...
-
     @property
     def name(self) -> str:
         """Return the endpoint name."""
@@ -70,16 +65,14 @@ class SocketEndpoint:
         """Return a diagnostic representation of the endpoint."""
         ...
 
-
 # ---------------------------------------------------------------------------
 # Diagnostic snapshots
 # ---------------------------------------------------------------------------
 
-
 @final
-class SocketConnectionInfo:
+class ConnectionInfo:
     """
-    Immutable diagnostic snapshot of a socket connection.
+    Immutable diagnostic snapshot of a  connection.
 
     The values describe the connection state at the time the snapshot was
     created. They are not live views of the connection.
@@ -124,11 +117,10 @@ class SocketConnectionInfo:
         """Return a diagnostic representation of the snapshot."""
         ...
 
-
 @final
-class SocketServerInfo:
+class ServerInfo:
     """
-    Immutable diagnostic snapshot of a socket server.
+    Immutable diagnostic snapshot of a  server.
 
     The values describe the server state at the time the snapshot was
     created.
@@ -153,14 +145,12 @@ class SocketServerInfo:
         """Return a diagnostic representation of the snapshot."""
         ...
 
-
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
 
-
 @final
-class SocketServer:
+class Server:
     """
     Asynchronous local IPC server.
 
@@ -171,18 +161,18 @@ class SocketServer:
     """
 
     @staticmethod
-    def start(endpoint: _EndpointLike) -> Awaitable["SocketServer"]:
+    def start(endpoint: _EndpointLike) -> Awaitable["Server"]:
         """
         Start a server using the platform's default security settings.
 
         Parameters
         ----------
         endpoint:
-            Endpoint name or existing :class:`SocketEndpoint`.
+            Endpoint name or existing :class:`Endpoint`.
 
         Returns
         -------
-        Awaitable[SocketServer]
+        Awaitable[Server]
             Awaitable resolving to the started server.
 
         Raises
@@ -193,7 +183,6 @@ class SocketServer:
             If the native endpoint cannot be created.
         """
         ...
-
     if sys.platform == "win32":
 
         @staticmethod
@@ -201,9 +190,9 @@ class SocketServer:
             name: str,
             *,
             mode: str | None = ...,
-        ) -> Awaitable["SocketServer"]:
+        ) -> Awaitable["Server"]:
             """
-            Bind a Windows local socket with optional security configuration.
+            Bind a Windows local  with optional security configuration.
 
             Parameters
             ----------
@@ -215,11 +204,10 @@ class SocketServer:
 
             Returns
             -------
-            Awaitable[SocketServer]
+            Awaitable[Server]
                 Awaitable resolving to the bound server.
             """
             ...
-
     else:
 
         @staticmethod
@@ -227,9 +215,9 @@ class SocketServer:
             name: str,
             *,
             mode: int | None = ...,
-        ) -> Awaitable["SocketServer"]:
+        ) -> Awaitable["Server"]:
             """
-            Bind a Unix local socket with optional permission bits.
+            Bind a Unix local  with optional permission bits.
 
             Parameters
             ----------
@@ -241,18 +229,18 @@ class SocketServer:
 
             Returns
             -------
-            Awaitable[SocketServer]
+            Awaitable[Server]
                 Awaitable resolving to the bound server.
             """
             ...
 
-    def accept(self) -> Awaitable["SocketConnection"]:
+    def accept(self) -> Awaitable["Connection"]:
         """
         Wait for and accept the next connection.
 
         Returns
         -------
-        Awaitable[SocketConnection]
+        Awaitable[Connection]
             Awaitable resolving to the accepted connection.
 
         Raises
@@ -266,7 +254,7 @@ class SocketServer:
         """
         ...
 
-    def accept_timeout(self, timeout: float) -> Awaitable["SocketConnection"]:
+    def accept_timeout(self, timeout: float) -> Awaitable["Connection"]:
         """
         Accept a connection within a timeout.
 
@@ -340,11 +328,11 @@ class SocketServer:
         ...
 
     @property
-    def endpoint(self) -> SocketEndpoint:
+    def endpoint(self) -> Endpoint:
         """Return the server's endpoint object."""
         ...
 
-    def info(self) -> SocketServerInfo:
+    def info(self) -> ServerInfo:
         """Return an immutable snapshot of the current server state."""
         ...
 
@@ -352,14 +340,12 @@ class SocketServer:
         """Return a diagnostic representation of the server."""
         ...
 
-
 # ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------
 
-
 @final
-class SocketConnection:
+class Connection:
     """
     Ordered, asynchronous, full-duplex local byte-stream connection.
 
@@ -371,18 +357,18 @@ class SocketConnection:
     """
 
     @staticmethod
-    def connect(endpoint: _EndpointLike) -> Awaitable["SocketConnection"]:
+    def connect(endpoint: _EndpointLike) -> Awaitable["Connection"]:
         """
         Connect to a local IPC server.
 
         Parameters
         ----------
         endpoint:
-            Endpoint name or existing :class:`SocketEndpoint`.
+            Endpoint name or existing :class:`Endpoint`.
 
         Returns
         -------
-        Awaitable[SocketConnection]
+        Awaitable[Connection]
             Awaitable resolving to the established connection.
         """
         ...
@@ -391,14 +377,14 @@ class SocketConnection:
     def connect_timeout(
         endpoint: _EndpointLike,
         timeout: float,
-    ) -> Awaitable["SocketConnection"]:
+    ) -> Awaitable["Connection"]:
         """
         Connect to a local IPC server within a timeout.
 
         Parameters
         ----------
         endpoint:
-            Endpoint name or existing :class:`SocketEndpoint`.
+            Endpoint name or existing :class:`Endpoint`.
         timeout:
             Maximum number of seconds to wait.
 
@@ -541,13 +527,13 @@ class SocketConnection:
         """
         ...
 
-    def into_split(self) -> tuple["SocketReadHalf", "SocketWriteHalf"]:
+    def into_split(self) -> tuple["ReadHalf", "WriteHalf"]:
         """
         Consume this connection wrapper and return independent direction halves.
 
         Returns
         -------
-        tuple[SocketReadHalf, SocketWriteHalf]
+        tuple[ReadHalf, WriteHalf]
             Read and write halves sharing the same native connection state.
 
         Raises
@@ -558,7 +544,7 @@ class SocketConnection:
 
         Notes
         -----
-        After a successful split, this :class:`SocketConnection` wrapper is
+        After a successful split, this :class:`Connection` wrapper is
         consumed and can no longer be used.
         """
         ...
@@ -618,7 +604,7 @@ class SocketConnection:
         ...
 
     @property
-    def endpoint(self) -> SocketEndpoint:
+    def endpoint(self) -> Endpoint:
         """Return the logical endpoint associated with the connection."""
         ...
 
@@ -632,7 +618,7 @@ class SocketConnection:
         """Return the peer endpoint name, if known."""
         ...
 
-    def info(self) -> SocketConnectionInfo:
+    def info(self) -> ConnectionInfo:
         """Return an immutable snapshot of the connection state."""
         ...
 
@@ -640,18 +626,16 @@ class SocketConnection:
         """Return a diagnostic representation of the connection."""
         ...
 
-
 # ---------------------------------------------------------------------------
 # Split connection halves
 # ---------------------------------------------------------------------------
 
-
 @final
-class SocketReadHalf:
+class ReadHalf:
     """
-    Receive half of a split :class:`SocketConnection`.
+    Receive half of a split :class:`Connection`.
 
-    Instances are returned by :meth:`SocketConnection.into_split`.
+    Instances are returned by :meth:`Connection.into_split`.
     """
 
     def receive(self, max_bytes: int) -> Awaitable[bytes]:
@@ -675,7 +659,7 @@ class SocketReadHalf:
         """Return the shared native connection identifier."""
         ...
 
-    def info(self) -> SocketConnectionInfo:
+    def info(self) -> ConnectionInfo:
         """Return an immutable snapshot of the shared connection state."""
         ...
 
@@ -683,13 +667,12 @@ class SocketReadHalf:
         """Return a diagnostic representation of the read half."""
         ...
 
-
 @final
-class SocketWriteHalf:
+class WriteHalf:
     """
-    Send half of a split :class:`SocketConnection`.
+    Send half of a split :class:`Connection`.
 
-    Instances are returned by :meth:`SocketConnection.into_split`.
+    Instances are returned by :meth:`Connection.into_split`.
     """
 
     def send(self, data: _BytesLike) -> Awaitable[None]:
@@ -725,7 +708,7 @@ class SocketWriteHalf:
         """Return the shared native connection identifier."""
         ...
 
-    def info(self) -> SocketConnectionInfo:
+    def info(self) -> ConnectionInfo:
         """Return an immutable snapshot of the shared connection state."""
         ...
 
@@ -733,52 +716,48 @@ class SocketWriteHalf:
         """Return a diagnostic representation of the write half."""
         ...
 
-
 # ---------------------------------------------------------------------------
 # Transport namespace
 # ---------------------------------------------------------------------------
 
-
 @final
-class LocalSocketTransport:
+class LocalTransport:
     """
     Namespace for creating local IPC servers and connections.
 
     This class contains only static convenience methods; transport state is
-    held by :class:`SocketServer` and :class:`SocketConnection`.
+    held by :class:`Server` and :class:`Connection`.
     """
 
     @staticmethod
-    def start(endpoint: _EndpointLike) -> Awaitable[SocketServer]:
+    def start(endpoint: _EndpointLike) -> Awaitable[Server]:
         """Start a local IPC server."""
         ...
 
     @staticmethod
-    def connect(endpoint: _EndpointLike) -> Awaitable[SocketConnection]:
+    def connect(endpoint: _EndpointLike) -> Awaitable[Connection]:
         """Connect to a local IPC server."""
         ...
-
 
 # ---------------------------------------------------------------------------
 # Backwards-compatible public aliases
 # ---------------------------------------------------------------------------
 
-SocketListener: TypeAlias = SocketServer
-SocketStream: TypeAlias = SocketConnection
-SocketClient: TypeAlias = SocketConnection
-
+Listener: TypeAlias = Server
+Stream: TypeAlias = Connection
+Client: TypeAlias = Connection
 
 __all__ = [
     "__version__",
-    "SocketEndpoint",
-    "SocketConnectionInfo",
-    "SocketServerInfo",
-    "SocketServer",
-    "SocketConnection",
-    "SocketReadHalf",
-    "SocketWriteHalf",
-    "LocalSocketTransport",
-    "SocketListener",
-    "SocketStream",
-    "SocketClient",
+    "Endpoint",
+    "ConnectionInfo",
+    "ServerInfo",
+    "Server",
+    "Connection",
+    "ReadHalf",
+    "WriteHalf",
+    "LocalTransport",
+    "Listener",
+    "Stream",
+    "Client",
 ]

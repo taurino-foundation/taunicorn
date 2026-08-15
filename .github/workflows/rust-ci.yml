@@ -56,7 +56,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check transport crate
-        run: cargo check --manifest-path crates/taunicorn-transport/Cargo.toml --all-targets --locked
+        run: cargo check --manifest-path crates/taunicorn/Cargo.toml --all-targets --locked
 
       - name: Check PyO3 crate
         env:
@@ -64,7 +64,7 @@ jobs:
         run: cargo check --manifest-path crates/taunicorn-python/Cargo.toml --all-targets --locked
 
       - name: Clippy transport crate
-        run: cargo clippy --manifest-path crates/taunicorn-transport/Cargo.toml --all-targets --locked -- -D warnings
+        run: cargo clippy --manifest-path crates/taunicorn/Cargo.toml --all-targets --locked -- -D warnings
 
       - name: Clippy PyO3 crate
         env:
@@ -100,4 +100,4 @@ jobs:
           rustup default stable
 
       - name: Test transport crate
-        run: cargo test --manifest-path crates/taunicorn-transport/Cargo.toml --all-targets --locked
+        run: cargo test --manifest-path crates/taunicorn/Cargo.toml --all-targets --locked

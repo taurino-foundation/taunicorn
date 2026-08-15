@@ -47,8 +47,8 @@ Taunicorn is currently **alpha software**.
 
 The transport contract is intentionally small:
 
-- one `SocketServer` represents one named local endpoint;
-- one server can accept multiple independent `SocketConnection` values;
+- one `Server` represents one named local endpoint;
+- one server can accept multiple independent `Connection` values;
 - every connection is an ordered full-duplex byte stream;
 - `receive()` and `send()` may make progress concurrently;
 - concurrent sends are serialized so their buffers do not interleave;
@@ -60,6 +60,14 @@ The transport contract is intentionally small:
 - retries, framing, authentication, sessions, and application protocol behavior stay above the transport.
 
 ## Installation
+
+Rust:
+
+```bash
+cargo add taunicorn
+```
+
+Python:
 
 ```bash
 python -m pip install taunicorn
@@ -80,10 +88,10 @@ The primary Python API mirrors the concrete Rust transport model:
 ```python
 import asyncio
 
-from taunicorn import SocketConnection, SocketServer
+from taunicorn import Connection, Server
 
 
-async def read_exact(connection: SocketConnection, size: int) -> bytes:
+async def read_exact(connection: Connection, size: int) -> bytes:
     data = bytearray()
 
     while len(data) < size:
@@ -95,7 +103,7 @@ async def read_exact(connection: SocketConnection, size: int) -> bytes:
     return bytes(data)
 
 
-async def serve_once(server: SocketServer) -> None:
+async def serve_once(server: Server) -> None:
     connection = await server.accept()
 
     try:
@@ -109,10 +117,10 @@ async def serve_once(server: SocketServer) -> None:
 
 
 async def main() -> None:
-    server = await SocketServer.start("taunicorn-example")
+    server = await Server.start("taunicorn-example")
     server_task = asyncio.create_task(serve_once(server))
 
-    client = await SocketConnection.connect("taunicorn-example")
+    client = await Connection.connect("taunicorn-example")
 
     try:
         await client.send(b"PING")
@@ -134,16 +142,16 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`SocketListener`, `SocketStream`, and `SocketClient` remain available as compatibility aliases for the new concrete classes:
+`Listener`, `Stream`, and `Client` remain available as compatibility aliases for the new concrete classes:
 
 ```python
-from taunicorn import SocketListener, SocketStream
+from taunicorn import Listener, Stream
 
-assert SocketListener is SocketServer
-assert SocketStream is SocketConnection
+assert Listener is Server
+assert Stream is Connection
 ```
 
-New code should prefer `SocketServer` and `SocketConnection`.
+New code should prefer `Server` and `Connection`.
 
 ## Byte-stream semantics
 
@@ -177,7 +185,7 @@ Taunicorn deliberately does not choose one.
 
 ## Full-duplex I/O
 
-A `SocketConnection` supports one receive path and one send path making progress concurrently.
+A `Connection` supports one receive path and one send path making progress concurrently.
 
 Python:
 
@@ -249,7 +257,7 @@ await server.stop()
 ## Timeouts
 
 ```python
-connection = await SocketConnection.connect_timeout("endpoint", 2.0)
+connection = await Connection.connect_timeout("endpoint", 2.0)
 connection = await server.accept_timeout(2.0)
 
 chunk = await connection.read_timeout(64 * 1024, 5.0)
@@ -274,27 +282,27 @@ Retry, acknowledgement, replay, deduplication, and exactly-once behavior belong 
 
 ## Python API
 
-### `SocketEndpoint`
+### `Endpoint`
 
 A validated named local endpoint.
 
 ```python
-from taunicorn import SocketEndpoint
+from taunicorn import Endpoint
 
-endpoint = SocketEndpoint("taunicorn-example")
+endpoint = Endpoint("taunicorn-example")
 
 print(endpoint.name)
 print(str(endpoint))
 ```
 
-`SocketServer.start()` and `SocketConnection.connect()` accept either a `str` or `SocketEndpoint`.
+`Server.start()` and `Connection.connect()` accept either a `str` or `Endpoint`.
 
-### `SocketServer`
+### `Server`
 
 | API | Purpose |
 | --- | --- |
-| `await SocketServer.start(endpoint)` | Start a server with default platform permissions |
-| `await SocketServer.bind(name, mode=...)` | Bind with a platform-specific mode/security descriptor |
+| `await Server.start(endpoint)` | Start a server with default platform permissions |
+| `await Server.bind(name, mode=...)` | Bind with a platform-specific mode/security descriptor |
 | `await server.accept()` | Accept the next connection |
 | `await server.accept_timeout(seconds)` | Accept with timeout |
 | `await server.stop()` | Stop accepting and release the listening endpoint |
@@ -306,8 +314,8 @@ print(str(endpoint))
 | `server.is_closed()` | Compatibility view of stopped state |
 | `server.is_paused()` | Check pause state |
 | `server.name` | Endpoint name |
-| `server.endpoint` | `SocketEndpoint` value |
-| `server.info()` | `SocketServerInfo` snapshot |
+| `server.endpoint` | `Endpoint` value |
+| `server.info()` | `ServerInfo` snapshot |
 
 `mode` is platform-specific:
 
@@ -316,12 +324,12 @@ print(str(endpoint))
 
 Portable applications should normally use the default.
 
-### `SocketConnection`
+### `Connection`
 
 | API | Purpose |
 | --- | --- |
-| `await SocketConnection.connect(endpoint)` | Connect to a server |
-| `await SocketConnection.connect_timeout(endpoint, seconds)` | Connect with timeout |
+| `await Connection.connect(endpoint)` | Connect to a server |
+| `await Connection.connect_timeout(endpoint, seconds)` | Connect with timeout |
 | `await connection.receive(max_bytes)` | Receive an arbitrary byte-stream chunk |
 | `await connection.read(max_bytes)` | Alias for `receive()` |
 | `await connection.read_timeout(max_bytes, seconds)` | Receive with timeout |
@@ -346,10 +354,10 @@ Portable applications should normally use the default.
 | `connection.pause()` / `connection.resume()` | Pause or resume user-level I/O |
 | `connection.id` | Process-local diagnostic identifier |
 | `connection.name` | Logical endpoint name |
-| `connection.endpoint` | `SocketEndpoint` |
+| `connection.endpoint` | `Endpoint` |
 | `connection.local_endpoint` | Optional local endpoint snapshot |
 | `connection.peer_endpoint` | Optional peer endpoint snapshot |
-| `connection.info()` | `SocketConnectionInfo` snapshot |
+| `connection.info()` | `ConnectionInfo` snapshot |
 
 `id` is process-local diagnostic information. It is not a persistent session identifier.
 
@@ -368,7 +376,7 @@ await writer.shutdown_write()
 await reader.shutdown_read()
 ```
 
-`SocketReadHalf` exposes:
+`ReadHalf` exposes:
 
 - `receive()`
 - `read()`
@@ -376,7 +384,7 @@ await reader.shutdown_read()
 - `id`
 - `info()`
 
-`SocketWriteHalf` exposes:
+`WriteHalf` exposes:
 
 - `send()`
 - `write()`
@@ -387,27 +395,27 @@ await reader.shutdown_read()
 
 Splitting itself is synchronous. It fails if another async operation still owns a temporary reference to the unsplit connection.
 
-### `LocalSocketTransport`
+### `LocalTransport`
 
-`LocalSocketTransport` is a concrete zero-sized namespace, not a trait:
+`LocalTransport` is a concrete zero-sized namespace, not a trait:
 
 ```python
-from taunicorn import LocalSocketTransport
+from taunicorn import LocalTransport
 
-server = await LocalSocketTransport.start("my-endpoint")
-connection = await LocalSocketTransport.connect("my-endpoint")
+server = await LocalTransport.start("my-endpoint")
+connection = await LocalTransport.connect("my-endpoint")
 ```
 
-Most application code can use `SocketServer` and `SocketConnection` directly.
+Most application code can use `Server` and `Connection` directly.
 
 ### Compatibility aliases
 
 The package keeps these aliases for existing code:
 
 ```python
-SocketListener = SocketServer
-SocketStream = SocketConnection
-SocketClient = SocketConnection
+Listener = Server
+Stream = Connection
+Client = Connection
 ```
 
 They do not represent a separate implementation.
@@ -433,16 +441,16 @@ The Rust transport is concrete and struct-based.
 Primary types:
 
 ```rust
-use taunicorn_transport::{
-    LocalSocketTransport,
+use taunicorn::{
+    LocalTransport,
     ReceiveResult,
-    SocketConnection,
-    SocketConnectionInfo,
-    SocketEndpoint,
-    SocketReadHalf,
-    SocketServer,
-    SocketServerInfo,
-    SocketWriteHalf,
+    Connection,
+    ConnectionInfo,
+    Endpoint,
+    ReadHalf,
+    Server,
+    ServerInfo,
+    WriteHalf,
 };
 ```
 
@@ -450,10 +458,10 @@ use taunicorn_transport::{
 
 ```rust
 use anyhow::Result;
-use taunicorn_transport::SocketServer;
+use taunicorn::Server;
 
 async fn run() -> Result<()> {
-    let server = SocketServer::start("taunicorn-example").await?;
+    let server = Server::start("taunicorn-example").await?;
     let connection = server.accept().await?;
 
     // use connection ...
@@ -469,10 +477,10 @@ async fn run() -> Result<()> {
 
 ```rust
 use anyhow::Result;
-use taunicorn_transport::{ReceiveResult, SocketConnection};
+use taunicorn::{ReceiveResult, Connection};
 
 async fn exchange() -> Result<()> {
-    let connection = SocketConnection::connect("taunicorn-example").await?;
+    let connection = Connection::connect("taunicorn-example").await?;
 
     connection.send(b"PING").await?;
 
@@ -497,7 +505,7 @@ async fn exchange() -> Result<()> {
 ### Split connection
 
 ```rust
-let connection = SocketConnection::connect("taunicorn-example").await?;
+let connection = Connection::connect("taunicorn-example").await?;
 
 let (reader, writer) = connection.into_split();
 
@@ -532,8 +540,8 @@ PyO3 + pyo3-async-runtimes
 Tokio runtime
         │
         ▼
-crates/taunicorn-transport
-SocketServer / SocketConnection
+crates/taunicorn
+Server / Connection
         │
         ▼
 interprocess local sockets
@@ -574,13 +582,13 @@ taunicorn/
 │       ├── rust-ci.yml
 │       ├── python-ci.yml
 │       ├── security.yml
-│       ├── publish-python.yml
+│       ├── publish-python.yaml
 │       └── publish-rust.yml
 ├── crates/
 │   ├── taunicorn-python/
 │   │   ├── Cargo.toml
 │   │   └── src/
-│   └── taunicorn-transport/
+│   └── taunicorn/
 │       ├── Cargo.toml
 │       └── src/
 ├── docs/
@@ -613,9 +621,9 @@ Requirements:
 
 ```bash
 cargo fmt --all -- --check
-cargo check -p taunicorn-transport --all-targets --locked
-cargo clippy -p taunicorn-transport --all-targets --locked -- -D warnings
-cargo test -p taunicorn-transport --all-targets --locked
+cargo check -p taunicorn --all-targets --locked
+cargo clippy -p taunicorn --all-targets --locked -- -D warnings
+cargo test -p taunicorn --all-targets --locked
 ```
 
 ### PyO3 crate
@@ -647,7 +655,7 @@ The repository root `pyproject.toml` should point Maturin at the dedicated PyO3 
 
 ```toml
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.14.1,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
@@ -678,9 +686,9 @@ The stub describes the actual Python-facing API, including:
 
 - awaitable transport operations;
 - synchronous state/diagnostic methods;
-- `SocketEndpoint`;
-- `SocketConnectionInfo`;
-- `SocketServerInfo`;
+- `Endpoint`;
+- `ConnectionInfo`;
+- `ServerInfo`;
 - split read/write halves;
 - compatibility aliases.
 
@@ -776,7 +784,7 @@ Python and Rust publishing are intentionally separated.
 
 ### PyPI
 
-`.github/workflows/publish-python.yml`
+`.github/workflows/publish-python.yaml`
 
 A published GitHub Release triggers:
 
@@ -817,10 +825,12 @@ Rust publishing is separate and guarded.
 
 The workflow:
 
-1. runs `cargo publish --dry-run` for `taunicorn-transport`;
+1. runs `cargo publish --dry-run` for `taunicorn`;
 2. only publishes when explicitly requested;
 3. uses a protected `crates-io` GitHub environment;
-4. reads `CARGO_REGISTRY_TOKEN` only in the actual publish job.
+4. requests GitHub's OIDC identity with `id-token: write`;
+5. authenticates through `rust-lang/crates-io-auth-action@v1`;
+6. uses the short-lived registry token returned by the authentication action instead of storing a long-lived `CARGO_REGISTRY_TOKEN` secret in GitHub.
 
 ## Design principles
 
@@ -830,7 +840,7 @@ Taunicorn transports ordered bytes and leaves application semantics above the tr
 
 **Concrete APIs over transport trait hierarchies.**
 
-The core public implementation is expressed directly through `SocketServer`, `SocketConnection`, `SocketReadHalf`, and `SocketWriteHalf`.
+The core public implementation is expressed directly through `Server`, `Connection`, `ReadHalf`, and `WriteHalf`.
 
 **One transport state machine.**
 
@@ -870,9 +880,9 @@ Before opening a pull request:
 ```bash
 cargo fmt --all -- --check
 
-cargo check -p taunicorn-transport --all-targets --locked
-cargo clippy -p taunicorn-transport --all-targets --locked -- -D warnings
-cargo test -p taunicorn-transport --all-targets --locked
+cargo check -p taunicorn --all-targets --locked
+cargo clippy -p taunicorn --all-targets --locked -- -D warnings
+cargo test -p taunicorn --all-targets --locked
 
 cargo check -p taunicorn-python --all-targets --locked
 cargo clippy -p taunicorn-python --all-targets --locked -- -D warnings
@@ -880,7 +890,7 @@ cargo clippy -p taunicorn-python --all-targets --locked -- -D warnings
 uv run pytest python/tests
 ```
 
-Changes that introduce framing, RPC, serialization, routing, persistence, retry/replay, or broker behavior should generally live above the raw transport instead of becoming implicit `SocketConnection` behavior.
+Changes that introduce framing, RPC, serialization, routing, persistence, retry/replay, or broker behavior should generally live above the raw transport instead of becoming implicit `Connection` behavior.
 
 ## License
 

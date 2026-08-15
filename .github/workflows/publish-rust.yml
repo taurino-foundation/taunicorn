@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish crates/taunicorn-transport to crates.io after dry-run
+        description: Publish taunicorn to crates.io after dry-run
         required: true
         type: boolean
         default: false
@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: crates-io-taunicorn-transport
+  group: crates-io-taunicorn
   cancel-in-progress: false
 
 jobs:
@@ -21,36 +21,52 @@ jobs:
     name: cargo publish --dry-run
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
       - name: Install Rust stable
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - name: Verify transport crate package
-        run: cargo publish --manifest-path crates/taunicorn-transport/Cargo.toml --locked --dry-run
+
+      - name: Verify taunicorn package
+        run: cargo publish --manifest-path crates/taunicorn/Cargo.toml --locked --dry-run
 
   publish:
-    name: Publish taunicorn-transport
+    name: Publish taunicorn
     if: inputs.publish
     needs: dry-run
     runs-on: ubuntu-latest
+
     environment:
       name: crates-io
+
+    permissions:
+      contents: read
+      id-token: write
+
     timeout-minutes: 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
       - name: Install Rust stable
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - name: Publish transport crate
+
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish taunicorn
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --manifest-path crates/taunicorn-transport/Cargo.toml --locked
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --manifest-path crates/taunicorn/Cargo.toml --locked

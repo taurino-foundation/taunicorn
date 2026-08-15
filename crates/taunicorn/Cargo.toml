@@ -1,12 +1,12 @@
 [package]
-name = "taunicorn-transport"
+name = "taunicorn"
 version = "0.1.0"
 edition = "2024"
 
 description = "Cross-platform IPC transport infrastructure for Taunicorn"
 license = "MIT OR Apache-2.0"
 readme = "../../README.md"
-repository = "https://github.com/DEIN-NAME/taunicorn"
+repository = "https://github.com/taurino-foundation/taunicorn"
 
 keywords = [
     "ipc",
@@ -31,10 +31,3 @@ libc = "0.2.178"
 
 [target.'cfg(windows)'.dependencies]
 widestring = "1.2.1"
-
-[profile.release]
-opt-level = "z"
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-strip = "symbols"

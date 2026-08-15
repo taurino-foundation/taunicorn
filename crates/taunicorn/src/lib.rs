@@ -1,8 +1,8 @@
 //! Concrete, struct-based transport API for ordered, full-duplex local byte streams.
 //!
 //! This module intentionally contains no custom transport traits. The semantic contract is
-//! expressed directly by `SocketServer`, `SocketConnection`, `SocketReadHalf`, and
-//! `SocketWriteHalf`.
+//! expressed directly by `Server`, `Connection`, `ReadHalf`, and
+//! `WriteHalf`.
 //!
 //! There is deliberately no framing, message protocol, serialization, authentication,
 //! session management, routing, retry/replay logic, acknowledgement, or business semantics.
@@ -47,9 +47,9 @@ fn next_socket_id() -> u64 {
 /// The same opaque value is mapped by `interprocess::GenericNamespaced` to the platform's local
 /// socket mechanism.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct SocketEndpoint(String);
+pub struct Endpoint(String);
 
-impl SocketEndpoint {
+impl Endpoint {
     pub fn new(name: impl Into<String>) -> Result<Self> {
         let name = name.into();
         if name.is_empty() {
@@ -63,19 +63,19 @@ impl SocketEndpoint {
     }
 }
 
-impl fmt::Display for SocketEndpoint {
+impl fmt::Display for Endpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-impl From<String> for SocketEndpoint {
+impl From<String> for Endpoint {
     fn from(value: String) -> Self {
         Self(value)
     }
 }
 
-impl From<&str> for SocketEndpoint {
+impl From<&str> for Endpoint {
     fn from(value: &str) -> Self {
         Self(value.to_owned())
     }
@@ -96,10 +96,10 @@ pub enum ReceiveResult {
 
 /// Snapshot diagnostics for a connection.
 #[derive(Clone, Debug)]
-pub struct SocketConnectionInfo {
+pub struct ConnectionInfo {
     pub id: u64,
-    pub local_endpoint: Option<SocketEndpoint>,
-    pub peer_endpoint: Option<SocketEndpoint>,
+    pub local_endpoint: Option<Endpoint>,
+    pub peer_endpoint: Option<Endpoint>,
     pub is_closed: bool,
     pub is_read_shutdown: bool,
     pub is_write_shutdown: bool,
@@ -108,8 +108,8 @@ pub struct SocketConnectionInfo {
 
 /// Snapshot diagnostics for a server.
 #[derive(Clone, Debug)]
-pub struct SocketServerInfo {
-    pub local_endpoint: SocketEndpoint,
+pub struct ServerInfo {
+    pub local_endpoint: Endpoint,
     pub is_stopped: bool,
     pub is_paused: bool,
 }
@@ -160,18 +160,18 @@ impl ServerState {
 }
 
 /// Concrete listener side of the local byte transport.
-pub struct SocketServer {
+pub struct Server {
     // `Arc` lets an in-flight accept keep the listener alive without holding a blocking mutex
     // across `.await`. `stop()` removes the server-owned Arc and cancels pending accepts.
     inner: StdMutex<Option<Arc<RawListener>>>,
-    endpoint: SocketEndpoint,
+    endpoint: Endpoint,
     state: Arc<ServerState>,
     stop_token: CancellationToken,
 }
 
-impl SocketServer {
+impl Server {
     /// Start a server with default platform permissions/security settings.
-    pub async fn start(endpoint: impl Into<SocketEndpoint>) -> Result<Self> {
+    pub async fn start(endpoint: impl Into<Endpoint>) -> Result<Self> {
         let endpoint = endpoint.into();
         Self::bind(endpoint.as_str(), None).await
     }
@@ -182,7 +182,7 @@ impl SocketServer {
         #[cfg(unix)] mode: Option<u32>,
         #[cfg(windows)] mode: Option<String>,
     ) -> Result<Self> {
-        let endpoint = SocketEndpoint::new(name)?;
+        let endpoint = Endpoint::new(name)?;
         let socket_name = get_async_socket_name(endpoint.as_str())?;
         let mut opts = ListenerOptions::new().name(socket_name);
 
@@ -222,7 +222,7 @@ impl SocketServer {
     }
 
     /// Wait for the next client. A concurrent `stop()` interrupts this operation.
-    pub async fn accept(&self) -> Result<SocketConnection> {
+    pub async fn accept(&self) -> Result<Connection> {
         if self.is_paused() {
             return Err(anyhow!("socket server is paused"));
         }
@@ -237,10 +237,10 @@ impl SocketServer {
             }
         };
 
-        Ok(SocketConnection::from_accepted(stream, self.endpoint.clone()))
+        Ok(Connection::from_accepted(stream, self.endpoint.clone()))
     }
 
-    pub async fn accept_timeout(&self, timeout: Duration) -> Result<SocketConnection> {
+    pub async fn accept_timeout(&self, timeout: Duration) -> Result<Connection> {
         tokio::time::timeout(timeout, self.accept())
             .await
             .map_err(|_| anyhow!("socket accept timeout"))?
@@ -298,7 +298,7 @@ impl SocketServer {
         !self.is_stopped() && !self.is_paused()
     }
 
-    pub fn endpoint(&self) -> &SocketEndpoint {
+    pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
 
@@ -306,12 +306,12 @@ impl SocketServer {
         self.endpoint.as_str()
     }
 
-    pub fn local_endpoint(&self) -> SocketEndpoint {
+    pub fn local_endpoint(&self) -> Endpoint {
         self.endpoint.clone()
     }
 
-    pub fn info(&self) -> SocketServerInfo {
-        SocketServerInfo {
+    pub fn info(&self) -> ServerInfo {
+        ServerInfo {
             local_endpoint: self.endpoint.clone(),
             is_stopped: self.is_stopped(),
             is_paused: self.is_paused(),
@@ -373,9 +373,9 @@ impl ConnectionState {
 
 struct ConnectionCore {
     id: u64,
-    endpoint: SocketEndpoint,
-    local_endpoint: Option<SocketEndpoint>,
-    peer_endpoint: Option<SocketEndpoint>,
+    endpoint: Endpoint,
+    local_endpoint: Option<Endpoint>,
+    peer_endpoint: Option<Endpoint>,
     stream: StdMutex<Option<Arc<RawStream>>>,
     state: ConnectionState,
 
@@ -393,9 +393,9 @@ struct ConnectionCore {
 impl ConnectionCore {
     fn new(
         stream: RawStream,
-        endpoint: SocketEndpoint,
-        local_endpoint: Option<SocketEndpoint>,
-        peer_endpoint: Option<SocketEndpoint>,
+        endpoint: Endpoint,
+        local_endpoint: Option<Endpoint>,
+        peer_endpoint: Option<Endpoint>,
     ) -> Self {
         Self {
             id: next_socket_id(),
@@ -754,8 +754,8 @@ impl ConnectionCore {
         Ok(())
     }
 
-    fn info(&self) -> SocketConnectionInfo {
-        SocketConnectionInfo {
+    fn info(&self) -> ConnectionInfo {
+        ConnectionInfo {
             id: self.id,
             local_endpoint: self.local_endpoint.clone(),
             peer_endpoint: self.peer_endpoint.clone(),
@@ -771,12 +771,12 @@ impl ConnectionCore {
 ///
 /// `receive(&self, ..)` and `send(&self, ..)` can progress concurrently. Same-direction calls are
 /// serialized so concurrent full-buffer sends cannot interleave their bytes.
-pub struct SocketConnection {
+pub struct Connection {
     core: Arc<ConnectionCore>,
 }
 
-impl SocketConnection {
-    fn from_accepted(stream: RawStream, server_endpoint: SocketEndpoint) -> Self {
+impl Connection {
+    fn from_accepted(stream: RawStream, server_endpoint: Endpoint) -> Self {
         Self {
             core: Arc::new(ConnectionCore::new(
                 stream,
@@ -789,7 +789,7 @@ impl SocketConnection {
 
     /// Connect to a server. The resulting value is already the ordinary connection object;
     /// there is no separate client behavior layer.
-    pub async fn connect(endpoint: impl Into<SocketEndpoint>) -> Result<Self> {
+    pub async fn connect(endpoint: impl Into<Endpoint>) -> Result<Self> {
         let endpoint = endpoint.into();
         if endpoint.as_str().is_empty() {
             return Err(anyhow!("socket endpoint must not be empty"));
@@ -806,7 +806,7 @@ impl SocketConnection {
     }
 
     pub async fn connect_timeout(
-        endpoint: impl Into<SocketEndpoint>,
+        endpoint: impl Into<Endpoint>,
         timeout: Duration,
     ) -> Result<Self> {
         let endpoint = endpoint.into();
@@ -851,16 +851,16 @@ impl SocketConnection {
     }
 
     /// Consume this connection and expose independently usable concrete directional structs.
-    pub fn into_split(self) -> (SocketReadHalf, SocketWriteHalf) {
+    pub fn into_split(self) -> (ReadHalf, WriteHalf) {
         let core = self.core;
-        (SocketReadHalf { core: Arc::clone(&core) }, SocketWriteHalf { core })
+        (ReadHalf { core: Arc::clone(&core) }, WriteHalf { core })
     }
 
     pub fn id(&self) -> u64 {
         self.core.id
     }
 
-    pub fn endpoint(&self) -> &SocketEndpoint {
+    pub fn endpoint(&self) -> &Endpoint {
         &self.core.endpoint
     }
 
@@ -868,15 +868,15 @@ impl SocketConnection {
         self.core.endpoint.as_str()
     }
 
-    pub fn local_endpoint(&self) -> Option<SocketEndpoint> {
+    pub fn local_endpoint(&self) -> Option<Endpoint> {
         self.core.local_endpoint.clone()
     }
 
-    pub fn peer_endpoint(&self) -> Option<SocketEndpoint> {
+    pub fn peer_endpoint(&self) -> Option<Endpoint> {
         self.core.peer_endpoint.clone()
     }
 
-    pub fn info(&self) -> SocketConnectionInfo {
+    pub fn info(&self) -> ConnectionInfo {
         self.core.info()
     }
 
@@ -960,12 +960,12 @@ impl SocketConnection {
     }
 }
 
-/// Concrete receive half returned by `SocketConnection::into_split`.
-pub struct SocketReadHalf {
+/// Concrete receive half returned by `Connection::into_split`.
+pub struct ReadHalf {
     core: Arc<ConnectionCore>,
 }
 
-impl SocketReadHalf {
+impl ReadHalf {
     pub async fn receive(&self, buffer: &mut [u8]) -> Result<ReceiveResult> {
         self.core.receive(buffer).await
     }
@@ -978,17 +978,17 @@ impl SocketReadHalf {
         self.core.id
     }
 
-    pub fn info(&self) -> SocketConnectionInfo {
+    pub fn info(&self) -> ConnectionInfo {
         self.core.info()
     }
 }
 
-/// Concrete send half returned by `SocketConnection::into_split`.
-pub struct SocketWriteHalf {
+/// Concrete send half returned by `Connection::into_split`.
+pub struct WriteHalf {
     core: Arc<ConnectionCore>,
 }
 
-impl SocketWriteHalf {
+impl WriteHalf {
     pub async fn send(&self, data: &[u8]) -> Result<()> {
         self.core.send(data).await
     }
@@ -1009,26 +1009,26 @@ impl SocketWriteHalf {
         self.core.id
     }
 
-    pub fn info(&self) -> SocketConnectionInfo {
+    pub fn info(&self) -> ConnectionInfo {
         self.core.info()
     }
 }
 
 /// Zero-sized namespace corresponding to the old transport-association concept, but concrete.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct LocalSocketTransport;
+pub struct LocalTransport;
 
-impl LocalSocketTransport {
-    pub async fn start(endpoint: impl Into<SocketEndpoint>) -> Result<SocketServer> {
-        SocketServer::start(endpoint).await
+impl LocalTransport {
+    pub async fn start(endpoint: impl Into<Endpoint>) -> Result<Server> {
+        Server::start(endpoint).await
     }
 
-    pub async fn connect(endpoint: impl Into<SocketEndpoint>) -> Result<SocketConnection> {
-        SocketConnection::connect(endpoint).await
+    pub async fn connect(endpoint: impl Into<Endpoint>) -> Result<Connection> {
+        Connection::connect(endpoint).await
     }
 }
 
 /// Backward-compatible names for existing call sites. These are aliases, not traits.
-pub type SocketListener = SocketServer;
-pub type SocketStream = SocketConnection;
-pub type SocketClient = SocketConnection;
+pub type SocketListener = Server;
+pub type SocketStream = Connection;
+pub type SocketClient = Connection;
