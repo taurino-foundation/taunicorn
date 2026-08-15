@@ -8,6 +8,14 @@ name = "taunicorn"
 dynamic = ["version"]
 description = "Async local IPC byte-stream transport for Rust and Python."
 readme = "README.md"
+
+license = "MIT OR Apache-2.0"
+license-files = [
+    "LICENSE-MIT",
+    "LICENSE-APACHE-2.0",
+    "LICENSE.spdx",
+]
+
 requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 3 - Alpha",
