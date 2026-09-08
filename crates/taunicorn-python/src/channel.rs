@@ -45,7 +45,6 @@ mod exceptions {
 
 pub use exceptions::{QueueBusy, QueueClosed, QueueEmpty, QueueFull};
 // Export the actual exception raised by the async bridge, not a lookalike type.
-pub use pyo3_async_runtimes::err::RustPanic;
 
 fn closed_error() -> PyErr {
     QueueClosed::new_err("queue is closed")
