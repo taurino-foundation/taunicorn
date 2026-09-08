@@ -1,6 +1,24 @@
-from ._taunicorn import (Client, Connection, ConnectionInfo, Endpoint,
-                         Listener, LocalTransport, ReadHalf, Server,
-                         ServerInfo, Stream, WriteHalf, __version__)
+from ._taunicorn import (
+    BoundedQueue,
+    Client,
+    Connection,
+    ConnectionInfo,
+    Endpoint,
+    Listener,
+    LocalTransport,
+    QueueBusy,
+    QueueClosed,
+    QueueEmpty,
+    QueueFull,
+    ReadHalf,
+    RustPanic,
+    Server,
+    ServerInfo,
+    Stream,
+    UnboundedQueue,
+    WriteHalf,
+    __version__,
+)
 
 __all__ = [
     "__version__",
@@ -15,4 +33,11 @@ __all__ = [
     "Listener",
     "Stream",
     "Client",
+    "BoundedQueue",
+    "UnboundedQueue",
+    "QueueClosed",
+    "QueueFull",
+    "QueueEmpty",
+    "QueueBusy",
+    "RustPanic",
 ]
