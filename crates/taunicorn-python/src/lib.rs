@@ -25,7 +25,9 @@ use std::{
     time::Duration,
 };
 
-use crate::channel::{BoundedQueue, QueueBusy, QueueClosed, QueueEmpty, QueueFull, UnboundedQueue};
+use crate::channel::{
+    BoundedQueue, QueueBusy, QueueClosed, QueueEmpty, QueueFull, UnboundedQueue,
+};
 
 // -------------------------------------------------------------------------------------------------
 // Shared conversion helpers
@@ -939,11 +941,9 @@ pub fn _taunicorn(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("QueueEmpty", py.get_type::<QueueEmpty>())?;
     m.add("QueueBusy", py.get_type::<QueueBusy>())?;
     m.add("RustPanic", py.get_type::<RustPanic>())?;
-
     // Compatibility with the original Python class spellings.
     m.add("BoundedQeue", py.get_type::<BoundedQueue>())?;
     m.add("UnoundedQeue", py.get_type::<UnboundedQueue>())?;
-    
     m.add_class::<PyEndpoint>()?;
     m.add_class::<PyConnectionInfo>()?;
     m.add_class::<PyServerInfo>()?;
@@ -952,12 +952,10 @@ pub fn _taunicorn(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyReadHalf>()?;
     m.add_class::<PyWriteHalf>()?;
     m.add_class::<PyLocalTransport>()?;
-
     // Compatibility aliases for the previous Python-facing names. They refer to the new concrete
     // classes; no legacy wrapper implementation remains.
     m.add("Listener", m.getattr("Server")?)?;
     m.add("Stream", m.getattr("Connection")?)?;
     m.add("Client", m.getattr("Connection")?)?;
-
     Ok(())
 }

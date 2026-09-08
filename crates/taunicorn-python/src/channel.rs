@@ -4,12 +4,12 @@ use pyo3::exceptions::{PyBlockingIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::sync::{
-    mpsc::{
-        channel, unbounded_channel,
-        error::{TryRecvError, TrySendError},
-        Receiver, Sender, UnboundedReceiver, UnboundedSender,
-    },
     Mutex, Semaphore,
+    mpsc::{
+        Receiver, Sender, UnboundedReceiver, UnboundedSender, channel,
+        error::{TryRecvError, TrySendError},
+        unbounded_channel,
+    },
 };
 use tokio_util::sync::CancellationToken;
 
@@ -18,19 +18,27 @@ mod exceptions {
     use pyo3::create_exception;
 
     create_exception!(
-        rust_queues, QueueClosed, PyRuntimeError,
+        rust_queues,
+        QueueClosed,
+        PyRuntimeError,
         "Sending is closed, or the closed queue has been drained."
     );
     create_exception!(
-        rust_queues, QueueFull, PyBlockingIOError,
+        rust_queues,
+        QueueFull,
+        PyBlockingIOError,
         "The bounded queue currently has no free capacity."
     );
     create_exception!(
-        rust_queues, QueueEmpty, PyBlockingIOError,
+        rust_queues,
+        QueueEmpty,
+        PyBlockingIOError,
         "No item is currently available; the queue is not fully drained and closed."
     );
     create_exception!(
-        rust_queues, QueueBusy, PyBlockingIOError,
+        rust_queues,
+        QueueBusy,
+        PyBlockingIOError,
         "The receiver is currently locked by another operation."
     );
 }
@@ -65,15 +73,12 @@ impl BoundedQueue {
         // Tokio panics for zero or an unsupported capacity; report a Python error instead.
         if capacity == 0 || capacity > Semaphore::MAX_PERMITS {
             return Err(PyValueError::new_err(format!(
-                "capacity must be between 1 and {}", Semaphore::MAX_PERMITS
+                "capacity must be between 1 and {}",
+                Semaphore::MAX_PERMITS
             )));
         }
         let (tx, rx) = channel(capacity);
-        Ok(Self {
-            tx,
-            rx: Arc::new(Mutex::new(rx)),
-            shutdown: CancellationToken::new(),
-        })
+        Ok(Self { tx, rx: Arc::new(Mutex::new(rx)), shutdown: CancellationToken::new() })
     }
 
     /// Return an asyncio.Future; await it to send, waiting for space if necessary.
@@ -121,8 +126,7 @@ impl BoundedQueue {
 
     /// Receive immediately; raise QueueEmpty, QueueBusy or QueueClosed.
     fn try_recv(&self) -> PyResult<Py<PyAny>> {
-        let mut rx = self.rx.try_lock()
-            .map_err(|_| QueueBusy::new_err("receiver is busy"))?;
+        let mut rx = self.rx.try_lock().map_err(|_| QueueBusy::new_err("receiver is busy"))?;
         if self.shutdown.is_cancelled() {
             rx.close();
         }
@@ -167,11 +171,7 @@ impl UnboundedQueue {
     #[new]
     fn new() -> Self {
         let (tx, rx) = unbounded_channel();
-        Self {
-            tx,
-            rx: Arc::new(Mutex::new(rx)),
-            shutdown: CancellationToken::new(),
-        }
+        Self { tx, rx: Arc::new(Mutex::new(rx)), shutdown: CancellationToken::new() }
     }
 
     /// Return an asyncio.Future for a send. There is no wait for channel capacity.
@@ -214,8 +214,7 @@ impl UnboundedQueue {
 
     /// Receive immediately; raise QueueEmpty, QueueBusy or QueueClosed.
     fn try_recv(&self) -> PyResult<Py<PyAny>> {
-        let mut rx = self.rx.try_lock()
-            .map_err(|_| QueueBusy::new_err("receiver is busy"))?;
+        let mut rx = self.rx.try_lock().map_err(|_| QueueBusy::new_err("receiver is busy"))?;
         if self.shutdown.is_cancelled() {
             rx.close();
         }
@@ -235,4 +234,3 @@ impl UnboundedQueue {
         self.shutdown.is_cancelled() || self.tx.is_closed()
     }
 }
-
