@@ -39,6 +39,8 @@ Taunicorn deliberately does **not** impose RPC, serialization, routing, framing,
 - Opaque byte payloads
 - Cross-platform local IPC
 - PEP 561 typing via `_taunicorn.pyi` and `py.typed`
+- Rust-backed bounded and unbounded FIFO queues for Python
+- Queue-specific non-blocking errors and explicit close/drain semantics
 - No broker, RPC layer, serializer, message envelope, reconnect, or replay layer
 
 ## Status
@@ -408,6 +410,141 @@ connection = await LocalTransport.connect("my-endpoint")
 
 Most application code can use `Server` and `Connection` directly.
 
+### Rust-backed queues
+
+Taunicorn also exposes Rust-backed FIFO queues to Python. These queues are implemented with Tokio channels and are useful when Python code needs queue operations backed by the same Rust async runtime used by the bindings.
+
+Two queue types are available:
+
+- `BoundedQueue(capacity)` — bounded FIFO queue with explicit capacity;
+- `UnboundedQueue()` — FIFO queue without a fixed capacity limit.
+
+The async `send()` and `recv()` methods return Python `asyncio.Future` objects created by the Rust/Python async bridge and therefore require a running `asyncio` event loop.
+
+```python
+import asyncio
+
+from taunicorn import (
+    BoundedQueue,
+    QueueClosed,
+    QueueEmpty,
+    QueueFull,
+)
+
+
+async def main() -> None:
+    queue = BoundedQueue(16)
+
+    await queue.send({"kind": "ping"})
+    item = await queue.recv()
+
+    print(item)
+
+    queue.close()
+
+    try:
+        await queue.recv()
+    except QueueClosed:
+        print("queue closed and drained")
+
+
+asyncio.run(main())
+```
+
+#### `BoundedQueue`
+
+```python
+from taunicorn import BoundedQueue
+
+queue = BoundedQueue(128)
+```
+
+| API | Purpose |
+| --- | --- |
+| `BoundedQueue(capacity)` | Create a bounded FIFO queue |
+| `await queue.send(item)` | Send an item, waiting for free capacity when necessary |
+| `await queue.recv()` | Receive the next item |
+| `queue.try_send(item)` | Send immediately without waiting |
+| `queue.try_recv()` | Receive immediately without waiting |
+| `queue.close()` | Stop new sends and wake waiters; buffered items remain readable |
+| `queue.is_closed()` | Check whether sending has been closed |
+| `queue.capacity()` | Snapshot of currently available capacity |
+| `queue.max_capacity()` | Capacity selected at construction |
+
+`capacity` must be at least `1`. Unsupported capacities are rejected with `ValueError` rather than allowing the underlying Tokio channel constructor to panic.
+
+`close()` is idempotent. Closing a queue prevents new sends, but items already buffered in the queue remain readable. Once the queue is both closed and drained, receive operations raise `QueueClosed`.
+
+#### `UnboundedQueue`
+
+```python
+from taunicorn import UnboundedQueue
+
+queue = UnboundedQueue()
+```
+
+| API | Purpose |
+| --- | --- |
+| `UnboundedQueue()` | Create an unbounded FIFO queue |
+| `await queue.send(item)` | Send an item through the async bridge |
+| `await queue.recv()` | Receive the next item |
+| `queue.try_send(item)` | Send immediately without requiring an event loop |
+| `queue.try_recv()` | Receive immediately without waiting |
+| `queue.close()` | Stop new sends and wake waiters; buffered items remain readable |
+| `queue.is_closed()` | Check whether sending has been closed |
+
+An unbounded queue has no fixed channel-capacity limit. Applications must therefore control producer behavior when unbounded memory growth would be unacceptable.
+
+#### Non-blocking queue operations
+
+`try_send()` and `try_recv()` do not wait.
+
+For a bounded queue:
+
+```python
+from taunicorn import BoundedQueue, QueueEmpty, QueueFull
+
+queue = BoundedQueue(1)
+
+queue.try_send("first")
+
+try:
+    queue.try_send("second")
+except QueueFull:
+    pass
+
+assert queue.try_recv() == "first"
+
+try:
+    queue.try_recv()
+except QueueEmpty:
+    pass
+```
+
+A receive operation may also raise `QueueBusy` when another receive operation currently owns the queue's receiver lock.
+
+#### Queue close and drain semantics
+
+Closing a queue stops the sending side immediately, but does not discard buffered objects.
+
+```python
+queue = BoundedQueue(2)
+
+queue.try_send("a")
+queue.try_send("b")
+queue.close()
+
+assert queue.is_closed()
+assert queue.try_recv() == "a"
+assert queue.try_recv() == "b"
+
+# The queue is now closed and drained.
+```
+
+After the final buffered item has been consumed, another `recv()` or `try_recv()` raises `QueueClosed`.
+
+The exported `RustPanic` exception is the actual panic exception type provided by `pyo3-async-runtimes`, rather than a separate lookalike exception defined by Taunicorn.
+
 ### Compatibility aliases
 
 The package keeps these aliases for existing code:
@@ -429,6 +566,11 @@ They do not represent a separate implementation.
 | Timeout | `TimeoutError` |
 | Closed/stopped/shut-down transport | `ConnectionError` |
 | Paused transport | `BlockingIOError` |
+| Bounded queue has no free capacity | `QueueFull` (`BlockingIOError`) |
+| Queue has no immediately available item | `QueueEmpty` (`BlockingIOError`) |
+| Queue receiver is locked by another operation | `QueueBusy` (`BlockingIOError`) |
+| Queue sending is closed, or queue is closed and drained | `QueueClosed` (`RuntimeError`) |
+| Panic propagated by the async Rust bridge | `RustPanic` |
 | OS I/O failure | `OSError` |
 | Wrapper state or unclassified transport failure | `RuntimeError` |
 
@@ -556,6 +698,8 @@ Rust asynchronous I/O runs on the Tokio runtime managed by `pyo3-async-runtimes`
 
 The bridge converts Rust futures into Python awaitables; it does not run Rust futures directly on the Python event loop.
 
+The Python queue API uses the same bridge for asynchronous queue operations. `BoundedQueue` is backed by Tokio's bounded MPSC channel, while `UnboundedQueue` uses Tokio's unbounded MPSC channel. Queue receivers are protected by an async mutex so receive operations remain serialized.
+
 ## Platform targets
 
 Primary release wheel targets:
@@ -588,6 +732,7 @@ taunicorn/
 │   ├── taunicorn-python/
 │   │   ├── Cargo.toml
 │   │   └── src/
+│   │       └── channel.rs
 │   └── taunicorn/
 │       ├── Cargo.toml
 │       └── src/
@@ -690,6 +835,9 @@ The stub describes the actual Python-facing API, including:
 - `ConnectionInfo`;
 - `ServerInfo`;
 - split read/write halves;
+- `BoundedQueue` and `UnboundedQueue`;
+- queue exceptions (`QueueClosed`, `QueueFull`, `QueueEmpty`, `QueueBusy`);
+- the exported async-bridge `RustPanic` exception;
 - compatibility aliases.
 
 ## Continuous integration
