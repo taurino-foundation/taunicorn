@@ -12,8 +12,9 @@ serialization, authentication, routing, or application-level acknowledgements.
 """
 
 import sys
+from asyncio import Future
 from collections.abc import Awaitable, Sequence
-from typing import TypeAlias, final
+from typing import Any, TypeAlias, final
 
 __version__: str
 
@@ -737,6 +738,124 @@ class LocalTransport:
     @staticmethod
     def connect(endpoint: _EndpointLike) -> Awaitable[Connection]:
         """Connect to a local IPC server."""
+        ...
+
+class QueueClosed(RuntimeError):
+    """Sending is closed, or the closed queue has been drained."""
+
+class QueueFull(BlockingIOError):
+    """The bounded queue currently has no free capacity."""
+
+class QueueEmpty(BlockingIOError):
+    """No item is currently available; the queue is not fully drained and closed."""
+
+class QueueBusy(BlockingIOError):
+    """The receiver is currently locked by another operation."""
+
+class RustPanic(BaseException): ...
+
+@final
+class BoundedQueue:
+    """Bounded FIFO queue of Python objects.
+
+    Async methods require a running asyncio event loop.
+    """
+
+    def __init__(self, capacity: int, /) -> None: ...
+    def send(self, item: Any, /) -> Future[None]:
+        """Return a Future; await it to send, waiting for capacity if necessary."""
+        ...
+
+    def recv(self) -> Future[Any]:
+        """Return a Future resolving to the next item.
+
+        Raises QueueClosed once the queue is closed and drained.
+        """
+        ...
+
+    def try_send(self, item: Any, /) -> None:
+        """Send immediately.
+
+        Raises:
+            QueueFull: If no capacity is currently available.
+            QueueClosed: If sending has been closed.
+        """
+        ...
+
+    def try_recv(self) -> Any:
+        """Receive immediately.
+
+        Raises:
+            QueueEmpty: If no item is currently available.
+            QueueBusy: If another receive operation currently holds the receiver.
+            QueueClosed: If the queue is closed and drained.
+        """
+        ...
+
+    def close(self) -> None:
+        """Stop new sends and wake waiters.
+
+        Buffered items remain readable. This operation is idempotent.
+        """
+        ...
+
+    def is_closed(self) -> bool:
+        """Return whether sending has been closed."""
+        ...
+
+    def capacity(self) -> int:
+        """Return a snapshot of the currently available channel capacity."""
+        ...
+
+    def max_capacity(self) -> int:
+        """Return the capacity selected at construction."""
+        ...
+
+@final
+class UnboundedQueue:
+    """Unbounded FIFO queue of Python objects.
+
+    Memory usage is not bounded.
+    """
+
+    def __init__(self) -> None: ...
+    def send(self, item: Any, /) -> Future[None]:
+        """Return a Future for the send operation."""
+        ...
+
+    def recv(self) -> Future[Any]:
+        """Return a Future resolving to the next item.
+
+        Raises QueueClosed once the queue is closed and drained.
+        """
+        ...
+
+    def try_send(self, item: Any, /) -> None:
+        """Send immediately.
+
+        Raises QueueClosed if sending has been closed.
+        """
+        ...
+
+    def try_recv(self) -> Any:
+        """Receive immediately.
+
+        Raises:
+            QueueEmpty: If no item is currently available.
+            QueueBusy: If another receive operation currently holds the receiver.
+            QueueClosed: If the queue is closed and drained.
+        """
+        ...
+
+    def close(self) -> None:
+        """Stop new sends and wake waiters.
+
+        Buffered items remain readable. This operation is idempotent.
+        """
+        ...
+
+    def is_closed(self) -> bool:
+        """Return whether sending has been closed."""
         ...
 
 # ---------------------------------------------------------------------------

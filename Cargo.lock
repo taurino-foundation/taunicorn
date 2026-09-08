@@ -282,12 +282,14 @@ dependencies = [
 
 [[package]]
 name = "taunicorn-python"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "pyo3",
  "pyo3-async-runtimes",
  "taunicorn",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
