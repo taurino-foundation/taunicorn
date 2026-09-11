@@ -33,7 +33,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 
-dependencies = []
+dependencies = [
+    "msgpack>=1.0.0,<2",
+    "cryptography>=42,<46",
+]
 
 
 [project.urls]
