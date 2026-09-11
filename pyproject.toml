@@ -35,7 +35,6 @@ classifiers = [
 
 dependencies = [
     "msgpack>=1.0.0,<2",
-    "cryptography>=48.0.1",
 ]
 
 
@@ -55,3 +54,4 @@ manifest-path = "crates/taunicorn-python/Cargo.toml"
 bindings = "pyo3"
 python-source = "python"
 module-name = "taunicorn._taunicorn"
+strip = true

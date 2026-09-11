@@ -354,7 +354,11 @@ class Connection:
     same direction are serialized by the native transport so complete sends
     do not interleave their bytes.
 
-    The connection supports independent read and write shutdown.
+    The connection supports independent read and write shutdown before a secure upgrade.
+    After a successful secure upgrade, diagnostics and close() remain available on
+    this same Python object, but raw I/O, half-shutdown, and into_split() are disabled.
+    During the handshake, close() cancels the handshake. Other calls are unavailable.
+    A failed or cancelled handshake requires a fresh transport connection.
     """
 
     @staticmethod
@@ -859,6 +863,45 @@ class UnboundedQueue:
         ...
 
 # ---------------------------------------------------------------------------
+# Native secure messages (the public coroutine facade is in taunicorn.security)
+# ---------------------------------------------------------------------------
+
+def generate_identity_private_key() -> bytes: ...
+def identity_public_key(identity_private_key: bytes) -> bytes: ...
+@final
+class SecureConnection:
+    """Native Rust secure session. Methods return asyncio Futures, not coroutines.
+
+    Use taunicorn.security.SecureConnection for the legacy async-def / MessagePack API.
+    Cancelling native I/O or failing protocol validation makes the session terminal.
+    """
+
+    @staticmethod
+    def client(
+        connection: Connection,
+        *,
+        identity_private_key: bytes,
+        server_identity_public_key: bytes,
+    ) -> Awaitable["SecureConnection"]: ...
+    @staticmethod
+    def server(
+        connection: Connection,
+        *,
+        client_identity_public_key: bytes,
+        identity_private_key: bytes,
+    ) -> Awaitable["SecureConnection"]: ...
+    @property
+    def connection(self) -> Connection:
+        """Original Python connection object; raw I/O and splitting are disabled."""
+        ...
+
+    def send(self, plaintext: bytes) -> Awaitable[None]: ...
+    def receive(self) -> Awaitable[bytes]: ...
+    def close(self) -> Awaitable[None]: ...
+    def abort(self) -> None: ...
+    def is_closed(self) -> bool: ...
+
+# ---------------------------------------------------------------------------
 # Backwards-compatible public aliases
 # ---------------------------------------------------------------------------
 
@@ -868,6 +911,9 @@ Client: TypeAlias = Connection
 
 __all__ = [
     "__version__",
+    "SecureConnection",
+    "generate_identity_private_key",
+    "identity_public_key",
     "Endpoint",
     "ConnectionInfo",
     "ServerInfo",
