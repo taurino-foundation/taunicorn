@@ -36,6 +36,7 @@ classifiers = [
 dependencies = [
     "msgpack>=1.0.0,<2",
     "cryptography>=42,<46",
+    
 ]
 
 
