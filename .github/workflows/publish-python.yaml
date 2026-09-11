@@ -130,37 +130,19 @@ jobs:
           retention-days: 1
 
   # ---------------------------------------------------------------------------
-  # Linux
-  #
-  # Native x86_64 + native ARM64 runners.
-  # manylinux 2_17 = broad glibc compatibility.
+  # Linux x86_64
+  # Core target: x86_64-unknown-linux-gnu
   # ---------------------------------------------------------------------------
 
-  wheels-linux:
-    name: Linux / ${{ matrix.name }}
+  wheel-linux-x86_64:
+    name: Linux x86_64
     needs: validate
-
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
 
     permissions:
       contents: read
 
     timeout-minutes: 40
-
-    strategy:
-      fail-fast: false
-
-      matrix:
-        include:
-          - name: x86_64
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: linux-x86_64
-
-          - name: ARM64
-            os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            artifact: linux-arm64
 
     steps:
       - name: Checkout
@@ -179,7 +161,7 @@ jobs:
         with:
           maturin-version: ${{ env.MATURIN_VERSION }}
           command: build
-          target: ${{ matrix.target }}
+          target: x86_64-unknown-linux-gnu
           manylinux: "2_17"
           rust-toolchain: stable
           args: >-
@@ -192,27 +174,18 @@ jobs:
       - name: Verify ABI3 wheel
         shell: bash
         run: |
-          wheel="$(find dist \
-            -maxdepth 1 \
-            -type f \
-            -name '*abi3*.whl' \
-            -print \
-            -quit)"
-
+          wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
           test -n "$wheel"
-
+          case "$(basename "$wheel")" in
+            *linux*x86_64*.whl) ;;
+            *) echo "Unexpected Linux wheel: $wheel" >&2; exit 1 ;;
+          esac
           echo "Wheel: $wheel"
 
       - name: Smoke test Python 3.14
         shell: bash
         run: |
-          wheel="$(find dist \
-            -maxdepth 1 \
-            -type f \
-            -name '*abi3*.whl' \
-            -print \
-            -quit)"
-
+          wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
           uv run \
             --isolated \
             --no-project \
@@ -226,58 +199,25 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dist-${{ matrix.artifact }}
+          name: dist-linux-x86_64
           path: dist/*.whl
           if-no-files-found: error
           retention-days: 1
 
   # ---------------------------------------------------------------------------
-  # Windows + macOS
+  # Windows x86_64
+  # Core target: x86_64-pc-windows-msvc
   # ---------------------------------------------------------------------------
 
-  wheels-native:
-    name: ${{ matrix.name }}
+  wheel-windows-x86_64:
+    name: Windows x86_64
     needs: validate
-
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
 
     permissions:
       contents: read
 
     timeout-minutes: 40
-
-    strategy:
-      fail-fast: false
-
-      matrix:
-        include:
-          # Windows x86_64
-          - name: Windows x86_64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: windows-x86_64
-            python_arch: x64
-
-          # Windows ARM64
-          - name: Windows ARM64
-            os: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            artifact: windows-arm64
-            python_arch: arm64
-
-          # macOS Intel
-          - name: macOS x86_64
-            os: macos-15-intel
-            target: x86_64-apple-darwin
-            artifact: macos-x86_64
-            python_arch: x64
-
-          # macOS Apple Silicon
-          - name: macOS ARM64
-            os: macos-15
-            target: aarch64-apple-darwin
-            artifact: macos-arm64
-            python_arch: arm64
 
     steps:
       - name: Checkout
@@ -289,7 +229,7 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          architecture: ${{ matrix.python_arch }}
+          architecture: x64
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -302,7 +242,7 @@ jobs:
         with:
           maturin-version: ${{ env.MATURIN_VERSION }}
           command: build
-          target: ${{ matrix.target }}
+          target: x86_64-pc-windows-msvc
           rust-toolchain: stable
           args: >-
             --release
@@ -314,35 +254,18 @@ jobs:
       - name: Verify ABI3 wheel
         shell: bash
         run: |
-          wheel="$(find dist \
-            -maxdepth 1 \
-            -type f \
-            -name '*abi3*.whl' \
-            -print \
-            -quit)"
-
+          wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
           test -n "$wheel"
-
+          case "$(basename "$wheel")" in
+            *win_amd64.whl) ;;
+            *) echo "Unexpected Windows wheel: $wheel" >&2; exit 1 ;;
+          esac
           echo "Wheel: $wheel"
 
-      # cryptography currently has no suitable prebuilt wheel for
-      # Windows ARM64 in this release environment. Installing taunicorn
-      # there would therefore trigger a source build of cryptography,
-      # which requires a separately configured OpenSSL toolchain.
-      #
-      # The taunicorn Windows ARM64 wheel itself is still built,
-      # verified, uploaded, and included in the PyPI release.
-      - name: Smoke test
-        if: matrix.target != 'aarch64-pc-windows-msvc'
+      - name: Smoke test Python 3.14
         shell: bash
         run: |
-          wheel="$(find dist \
-            -maxdepth 1 \
-            -type f \
-            -name '*abi3*.whl' \
-            -print \
-            -quit)"
-
+          wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
           uv run \
             --isolated \
             --no-project \
@@ -356,22 +279,193 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dist-${{ matrix.artifact }}
+          name: dist-windows-x86_64
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # macOS ARM64 / Apple Silicon
+  # Core target: aarch64-apple-darwin
+  # ---------------------------------------------------------------------------
+
+  wheel-macos-arm64:
+    name: macOS ARM64
+    needs: validate
+    runs-on: macos-15
+
+    permissions:
+      contents: read
+
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: arm64
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: "false"
+
+      - name: Build ABI3 wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          command: build
+          target: aarch64-apple-darwin
+          rust-toolchain: stable
+          args: >-
+            --release
+            --locked
+            --compatibility pypi
+            --manifest-path crates/taunicorn-python/Cargo.toml
+            --out dist
+
+      - name: Verify ABI3 wheel
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
+          test -n "$wheel"
+          case "$(basename "$wheel")" in
+            *macosx*arm64.whl) ;;
+            *) echo "Unexpected macOS wheel: $wheel" >&2; exit 1 ;;
+          esac
+          echo "Wheel: $wheel"
+
+      - name: Smoke test Python 3.14
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
+          uv run \
+            --isolated \
+            --no-project \
+            --python 3.14 \
+            --with "$wheel" \
+            --with pytest \
+            python -m pytest \
+            -q \
+            python/tests/test_local_socket_asyncio.py
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-macos-arm64
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # FreeBSD x86_64
+  # Core target: x86_64-unknown-freebsd
+  #
+  # GitHub has no hosted FreeBSD runner. This job requires a self-hosted runner
+  # labelled: self-hosted, freebsd, x64
+  #
+  # Required on the runner:
+  #   - FreeBSD amd64/x86_64
+  #   - stable Rust (cargo + rustc)
+  #   - Python 3.14 available as python3.14
+  #   - native compiler/linker toolchain
+  #   - network access to crates.io and PyPI
+  # ---------------------------------------------------------------------------
+
+  wheel-freebsd-x86_64:
+    name: FreeBSD x86_64
+    needs: validate
+    runs-on: [self-hosted, freebsd, x64]
+
+    permissions:
+      contents: read
+
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify FreeBSD x86_64 runner
+        shell: sh
+        run: |
+          test "$(uname -s)" = "FreeBSD"
+          test "$(uname -m)" = "amd64"
+          rust_host="$(rustc -vV | sed -n 's/^host: //p')"
+          test "$rust_host" = "x86_64-unknown-freebsd"
+          python3.14 --version
+          cargo --version
+          rustc --version
+
+      - name: Install pinned Maturin
+        shell: sh
+        run: |
+          cargo install \
+            maturin \
+            --version "${MATURIN_VERSION#v}" \
+            --locked
+          maturin --version
+
+      - name: Build ABI3 wheel
+        shell: sh
+        run: |
+          rm -rf dist
+          mkdir -p dist
+          maturin build \
+            --release \
+            --locked \
+            --compatibility pypi \
+            --manifest-path crates/taunicorn-python/Cargo.toml \
+            --out dist
+
+      - name: Verify ABI3 wheel
+        shell: sh
+        run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
+          test -n "$wheel"
+          case "$(basename "$wheel")" in
+            *freebsd*.whl) ;;
+            *) echo "Unexpected FreeBSD wheel: $wheel" >&2; exit 1 ;;
+          esac
+          echo "Wheel: $wheel"
+
+      - name: Smoke test Python 3.14
+        shell: sh
+        run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
+          rm -rf .venv-wheel-test
+          python3.14 -m venv .venv-wheel-test
+          . .venv-wheel-test/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install "$wheel" pytest
+          python -m pytest \
+            -q \
+            python/tests/test_local_socket_asyncio.py
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-freebsd-x86_64
           path: dist/*.whl
           if-no-files-found: error
           retention-days: 1
 
   # ---------------------------------------------------------------------------
   # Verify minimum Python version
-  #
-  # ABI3 means we do not need to repeat this on every architecture.
-  # This verifies that the produced wheel really imports on Python 3.10.
   # ---------------------------------------------------------------------------
 
   compatibility-test:
     name: Python 3.10 ABI compatibility
-    needs: wheels-linux
-
+    needs: wheel-linux-x86_64
     runs-on: ubuntu-latest
 
     permissions:
@@ -400,15 +494,8 @@ jobs:
       - name: Test Python 3.10
         shell: bash
         run: |
-          wheel="$(find dist \
-            -maxdepth 1 \
-            -type f \
-            -name '*abi3*.whl' \
-            -print \
-            -quit)"
-
+          wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
           test -n "$wheel"
-
           uv run \
             --isolated \
             --no-project \
@@ -428,8 +515,10 @@ jobs:
 
     needs:
       - sdist
-      - wheels-linux
-      - wheels-native
+      - wheel-linux-x86_64
+      - wheel-windows-x86_64
+      - wheel-macos-arm64
+      - wheel-freebsd-x86_64
       - compatibility-test
 
     runs-on: ubuntu-latest
@@ -469,13 +558,19 @@ jobs:
         shell: bash
         run: |
           test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 4
 
           test -n "$(find dist -maxdepth 1 -name '*linux*x86_64*.whl' -print -quit)"
-          test -n "$(find dist -maxdepth 1 -name '*linux*aarch64*.whl' -print -quit)"
           test -n "$(find dist -maxdepth 1 -name '*win_amd64*.whl' -print -quit)"
-          test -n "$(find dist -maxdepth 1 -name '*win_arm64*.whl' -print -quit)"
-          test -n "$(find dist -maxdepth 1 -name '*macosx*x86_64*.whl' -print -quit)"
           test -n "$(find dist -maxdepth 1 -name '*macosx*arm64*.whl' -print -quit)"
+          test -n "$(find dist -maxdepth 1 -name '*freebsd*.whl' -print -quit)"
+
+          for wheel in dist/*.whl; do
+            case "$(basename "$wheel")" in
+              *abi3*.whl) ;;
+              *) echo "Non-ABI3 wheel found: $wheel" >&2; exit 1 ;;
+            esac
+          done
 
       - name: Generate PEP 740 attestations
         uses: astral-sh/attest-action@f589a42a7efb6fe400b4f400de60b4bc90390027 # v0.0.6
