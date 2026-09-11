@@ -33,6 +33,8 @@ use tokio_util::sync::CancellationToken;
 #[cfg(windows)]
 use widestring::U16CString;
 
+pub mod security;
+
 type RawListener = interprocess::local_socket::tokio::Listener;
 type RawStream = interprocess::local_socket::tokio::Stream;
 
