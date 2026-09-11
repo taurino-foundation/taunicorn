@@ -6,19 +6,27 @@
   >
 </div>
 
-
 # Taunicorn
 
 Asynchronous local inter-process communication for Rust and Python.
 
 Taunicorn connects processes through named local endpoints and ordered,
 full-duplex byte streams. Rust applications use a concrete Tokio-based API.
+
 Python applications use `asyncio` awaitables backed by the same native transport
 through PyO3 and `pyo3-async-runtimes`.
 
 The core transport moves bytes without defining their meaning. An optional
-`SecureConnection` layer adds authenticated, encrypted messages. Separate
-Rust-backed queues provide in-process coordination for Python objects.
+`SecureConnection` layer adds authenticated, encrypted messages. Python now uses
+that existing Rust implementation through a PyO3 binding instead of maintaining
+its own cryptography implementation. Separate Rust-backed queues provide
+in-process coordination for Python objects.
+
+The migration replaces the Python security implementation only. The Rust core,
+its cryptographic algorithms, and the versioned wire protocol remain unchanged.
+
+For the integration's build and test status, see
+[Native security integration status](#native-security-integration-status).
 
 > [!NOTE]
 > Taunicorn is alpha software. Review the transport contract, failure behavior,
@@ -64,37 +72,82 @@ acknowledgements, and exactly-once processing are outside the raw transport.
 
 ### Runtime and protocol boundaries
 
-Python and Rust share the native byte transport. Their secure protocol layers
-are separate implementations of the same versioned wire format.
+Python and Rust share the native byte transport and the same Rust secure-session
+implementation. The public Python security module is a small coroutine facade:
+it delegates handshake, framing, identity operations, encryption, decryption,
+and sequence checks to the native extension. It contains no independent
+cryptographic protocol implementation.
 
-The following paths separate application protocol processing from native I/O:
+The secure path is:
 
 ```text
 Python application                         Rust application
-  optional Python SecureConnection           optional Rust SecureConnection
-  PyO3 / pyo3-async-runtimes                  |
-              |                              |
-              +-------------+----------------+
-                            |
+        |                                          |
+Python SecureConnection facade                     |
+(optional Python MessagePack)                      |
+        |                                          |
+PyO3 / pyo3-async-runtimes                           |
+        |                                          |
+        +--------------------+---------------------+
+                             |
+          Existing Rust SecureConnection
+            (optional secure message layer)
+                             |
                   Tokio Server / Connection
-                            |
+                             |
                  interprocess local sockets
-                            |
-                       OS local IPC
+                             |
+                        OS local IPC
 ```
 
-Python owns its `asyncio` event loop. The async bridge exposes Rust futures as
-Python awaitables; native transport I/O executes on Tokio, not directly on the
-Python event loop. Connection state, ordering, EOF, and shutdown remain owned by
-the Rust transport.
+Raw transport users bypass the optional secure message layer. Python owns its
+`asyncio` event loop; the async bridge exposes Rust futures as Python awaitables.
 
-Python secure-session cryptography and MessagePack processing run in the Python
-implementation. They are not automatically offloaded to Tokio merely because
-the enclosing methods are asynchronous.
+Native transport I/O and secure handshake/message operations execute on Tokio.
+
+Connection state, ordering, EOF, and directional shutdown remain owned by the
+Rust transport. The Python binding adds its own secure-session ownership and
+terminal-on-failure policy without modifying the Rust core.
+
+The public facade retains `async def` constructors and message methods, including
+compatibility with `asyncio.create_task(secure.receive())`. Its underlying native
+methods return awaitables rather than Python coroutine objects. Identity helpers
+are synchronous native calls that detach from Python during their Rust work;
+they are not asynchronous Tokio tasks.
+
+Optional MessagePack serialization and deserialization remain in Python to
+preserve the existing Python data mapping. That work is synchronous and is not
+automatically offloaded to Tokio. Python/native conversions and buffer copying
+also remain part of the call path.
 
 The Python queues use Tokio MPSC channels and serialized receiver access. They
 hold Python objects within a process; they are not an IPC message broker or a
 serialization mechanism.
+
+### Python security migration
+
+The previous Python security module performed its own handshake, framing, and
+cryptography using the PyPI `cryptography` package. The replacement calls the
+existing Rust implementation through `taunicorn._taunicorn.SecureConnection`.
+
+This removes that security layer's dependency on a separate Python cryptography
+wheel and puts its native code in Taunicorn's Maturin-built extension.
+
+| Component | Migration scope |
+| --- | --- |
+| Rust core, `crates/taunicorn/` | Unchanged transport, security protocol, and core manifest |
+| Python binding, `crates/taunicorn-python/` | Native secure class, identity helpers, module registration, ownership transfer, and cancellation handling |
+| Public Python package, `python/taunicorn/` | Replace Python cryptography with a coroutine facade; retain optional Python MessagePack helpers and update typing/exports |
+
+Public constructors, keyword arguments, byte-oriented methods, and identity
+helpers remain available through `taunicorn.security`. Internal Python cipher
+objects and `_DirectionState` no longer exist. Raw I/O after an upgrade and
+recovery after native secure-operation failure are deliberately more restrictive;
+see [Secure failure recovery](#secure-failure-recovery).
+
+The Rust core is reused, not rewritten or replaced. Removing `cryptography` does
+not by itself prove that every ABI or wheel problem in the application is fixed;
+the Taunicorn extension still needs a compatible build for its target.
 
 ### Connection lifecycle
 
@@ -105,9 +158,27 @@ Stopping the server interrupts pending accepts and releases the listener once
 in-flight operations release their references. It does not close already
 accepted connections. Applications must manage those connections separately.
 
-A secure session starts with an ordinary connection. The client and server then
-perform the secure handshake before exchanging application messages. After the
-upgrade, all application traffic must use the secure API.
+A secure session starts with an ordinary, unsplit connection. The client and
+server perform the secure handshake before exchanging application messages.
+
+The Python binding transfers exclusive ownership of the native transport to the
+existing Rust secure constructor. The upgrade is rejected while a raw async
+operation still holds the connection; an ownership-check rejection leaves that
+raw connection in place.
+
+After a successful upgrade, `secure.connection is connection` remains true.
+
+That original Python object supports diagnostics and `close()`, but raw reads,
+writes, flushes, directional shutdown, and `into_split()` are disabled. All
+application traffic must use the secure API. The guard also applies to aliases
+of the same Python object.
+
+During the handshake, the raw wrapper is unavailable for I/O and normal
+diagnostics. Calling `connection.close()` requests cancellation of the upgrade.
+
+A handshake that fails or is cancelled after ownership transfer leaves the
+wrapper unusable for further I/O; establish a new connection instead of
+falling back to plaintext.
 
 ## Requirements
 
@@ -116,13 +187,21 @@ upgrade, all application traffic must use the secure API.
 | Use case | Requirements |
 | --- | --- |
 | Python transport | Python 3.10 or newer, a running `asyncio` loop for asynchronous operations, and the native extension |
-| Python secure sessions | Python transport plus `cryptography` and `msgpack` |
+| Python secure byte messages | Python transport with the native security binding; no `cryptography` or `msgpack` required by this layer |
+| Python secure MessagePack helpers | Native secure byte messages plus the optional `msgpack` package |
 | Rust applications | Rust with Cargo and a Tokio runtime |
 | Source development | Rust stable, Python 3.10 or newer, `uv`, and the Maturin build configuration |
 
-The Python security module imports both `cryptography` and `msgpack`, including
-when only its byte-oriented methods are used. No optional dependency extra is
-assumed here.
+The Python security module imports its secure class and identity helpers from
+the Taunicorn native extension. It does not import `cryptography`. `msgpack` is
+loaded only when `send_msgpack()` or `receive_msgpack()` is called; importing the
+module and exchanging plaintext bytes through the encrypted session do not
+require it. No fallback to the former Python cryptography implementation is
+provided.
+
+The binding retains the PyO3 `abi3-py310` build feature. This targets the CPython
+stable ABI from Python 3.10 for compatible GIL-enabled interpreters, not a
+platform-independent binary. See [Packaging and typing](#packaging-and-typing).
 
 Dependency versions, feature flags, and any minimum supported Rust version must
 be taken from the checked-out project manifests. This README does not define a
@@ -158,15 +237,29 @@ For a project managed by `uv`, add the package as a project dependency instead:
 uv add taunicorn
 ```
 
-When the environment does not already provide the security module's dependencies,
-install them before importing `taunicorn.security`:
+For the native security implementation, `cryptography` is no longer required.
+
+Install `msgpack` only when using the structured-message convenience methods
+and the environment does not already provide it:
 
 ```bash
-python -m pip install cryptography msgpack
+python -m pip install msgpack
 ```
 
-Use the public `taunicorn` package for application imports. The native
-`taunicorn._taunicorn` extension is an implementation detail.
+A `taunicorn[msgpack]` extra may be used once it is declared in the installed
+release's packaging metadata. The integration includes an example declaration;
+this README does not assume that an already published release contains it.
+
+Use `taunicorn` for transport imports and `taunicorn.security` for the public
+secure facade and identity helpers. The `taunicorn._taunicorn` extension is an
+implementation detail. The facade and extension must come from the same build:
+replacing `security.py` alone is insufficient because older extensions do not
+export the new native security class and helpers.
+
+These installation commands select the available package release; they do not
+establish that the source integration documented here has already been published.
+
+Build the integrated source checkout when testing this migration.
 
 ### Rust
 
@@ -230,13 +323,18 @@ in protected storage; distribute only the public key:
 
 ```python
 from taunicorn.security import generate_identity_private_key, identity_public_key
-
 private_key = generate_identity_private_key()
 public_key = identity_public_key(private_key)
 ```
 
+The helpers call the existing Rust identity functions and return Python `bytes`.
+
+Private and public identity keys remain raw 32-byte values; the migration does
+not change identity storage formats or require regenerating valid keys.
+
 Identity storage, key-file formats, rotation, and trust updates are application
 responsibilities. Replacing a private identity requires updating the peer's pin.
+
 Do not regenerate a persistent identity for every production connection.
 
 ## Usage
@@ -244,15 +342,14 @@ Do not regenerate a persistent identity for every production connection.
 ### Python: request and response over a byte stream
 
 Save this example as `stream_example.py` and run it with `python stream_example.py`.
+
 It starts one local server and client, exchanges fixed four-byte records, and
 closes both sides. The receive helper reconstructs a record across arbitrary
 stream chunks; a single receive is not assumed to return four bytes.
 
 ```python
 import asyncio
-
 from taunicorn import Connection, Server
-
 
 async def read_exact(connection: Connection, size: int) -> bytes:
     data = bytearray()
@@ -263,7 +360,6 @@ async def read_exact(connection: Connection, size: int) -> bytes:
         data.extend(chunk)
     return bytes(data)
 
-
 async def serve_once(server: Server) -> None:
     connection = await server.accept_timeout(5.0)
     try:
@@ -273,7 +369,6 @@ async def serve_once(server: Server) -> None:
         await connection.shutdown_write()
     finally:
         await connection.close()
-
 
 async def main() -> None:
     endpoint = "taunicorn-stream-example"
@@ -295,7 +390,6 @@ async def main() -> None:
         await asyncio.gather(task, return_exceptions=True)
         await server.stop()
 
-
 asyncio.run(main())
 ```
 
@@ -312,7 +406,6 @@ with one accepted connection and sends a four-byte payload.
 ```rust
 use anyhow::Result;
 use taunicorn::{Connection, ReceiveResult, Server};
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let endpoint = "taunicorn-rust-example";
@@ -321,10 +414,8 @@ async fn main() -> Result<()> {
         server.accept(),
         Connection::connect(endpoint),
     )?;
-
     sender.send(b"PING").await?;
     sender.shutdown_write().await?;
-
     let mut buffer = [0_u8; 4096];
     loop {
         match receiver.receive(&mut buffer).await? {
@@ -332,7 +423,6 @@ async fn main() -> Result<()> {
             ReceiveResult::EndOfStream => break,
         }
     }
-
     receiver.close().await?;
     sender.close().await?;
     server.stop().await?;
@@ -357,14 +447,12 @@ of generating the demonstration keys below.
 
 ```python
 import asyncio
-
 from taunicorn import Connection, Server
 from taunicorn.security import (
     SecureConnection,
     generate_identity_private_key,
     identity_public_key,
 )
-
 
 async def serve_once(
     server: Server, private_key: bytes, client_public_key: bytes
@@ -381,7 +469,6 @@ async def serve_once(
         await secure.send(b"PONG")
     finally:
         await connection.close()
-
 
 async def run_demo() -> None:
     client_private = generate_identity_private_key()
@@ -409,17 +496,22 @@ async def run_demo() -> None:
         await asyncio.gather(task, return_exceptions=True)
         await server.stop()
 
-
 async def main() -> None:
     await asyncio.wait_for(run_demo(), timeout=10.0)
-
 
 asyncio.run(main())
 ```
 
-Once established, `secure.send()` accepts plaintext bytes and `secure.receive()`
-returns one complete authenticated plaintext message. Do not send or receive
-application data through the underlying raw connection after the handshake.
+Once established, `secure.send()` accepts Python `bytes` and `secure.receive()`
+returns one complete authenticated plaintext message as `bytes`. The identity
+parameters also require `bytes` containing exactly 32 bytes.
+
+The example keeps the same Python calls while handshake and message processing
+run in the existing Rust implementation. No `cryptography` import is needed.
+
+Do not send or receive application data through the underlying raw connection
+after the handshake; the Python binding rejects those operations. The original
+connection remains usable for diagnostics and the cleanup shown in the example.
 
 ### Rust: secure-session constructors
 
@@ -432,7 +524,6 @@ before its private key.
 use anyhow::Result;
 use taunicorn::Connection;
 use taunicorn::security::SecureConnection;
-
 async fn upgrade_client(
     connection: Connection,
     client_private: [u8; 32],
@@ -440,7 +531,6 @@ async fn upgrade_client(
 ) -> Result<SecureConnection> {
     SecureConnection::client(connection, client_private, server_public).await
 }
-
 async fn upgrade_server(
     connection: Connection,
     client_public: [u8; 32],
@@ -463,7 +553,6 @@ into one encrypted frame:
 ```python
 from taunicorn.security import SecureConnection
 
-
 async def send_job(secure: SecureConnection) -> None:
     await secure.send_msgpack({
         "type": "job.start",
@@ -472,37 +561,52 @@ async def send_job(secure: SecureConnection) -> None:
     })
 ```
 
-Receive the value with `await secure.receive_msgpack()`. In Rust,
-`send_msgpack(&value)` requires `serde::Serialize`, and
+Receive the value with `await secure.receive_msgpack()`. Python retains
+`msgpack.packb(value, use_bin_type=True)` and
+`msgpack.unpackb(plaintext, raw=False)`. These helpers serialize and deserialize
+in the Python facade; they do not pass Python objects through Rust Serde.
+
+Python binary values therefore keep their existing MessagePack binary encoding.
+
+The existing default map-key restriction is also retained: integer map keys are
+rejected on decoding.
+
+In Rust, `send_msgpack(&value)` requires `serde::Serialize`, and
 `receive_msgpack::<T>()` requires `serde::de::DeserializeOwned`. Rust uses named
 MessagePack fields; both peers still need a compatible application schema.
 
+Sharing a cryptographic implementation does not make every Python/Rust data
+type interchangeable.
+
+Both Python helpers import `msgpack` before performing secure I/O. A missing
+optional dependency therefore raises `ModuleNotFoundError` without consuming a
+received frame. A MessagePack decoding error alone does not automatically close
+a session after its encrypted message has been successfully authenticated.
+
 Serialization is a convenience layer, not authorization or input validation.
+
 Check decoded field types, identifiers, sizes, and permitted operations.
 
 ### Python: queue close and drain
 
 This example buffers an object, closes the sending side, and drains the queue.
+
 Closing does not discard buffered objects. Once the queue is closed and empty,
 receiving raises `QueueClosed`.
 
 ```python
 import asyncio
-
 from taunicorn import BoundedQueue, QueueClosed
-
 
 async def main() -> None:
     queue = BoundedQueue(16)
     await queue.send({"kind": "work", "id": 1})
     queue.close()
-
     try:
         while True:
             print(await queue.recv())
     except QueueClosed:
         pass  # Expected completion after the buffered item is consumed.
-
 
 asyncio.run(main())
 ```
@@ -538,6 +642,7 @@ not one atomic application record. `flush()` is not a remote acknowledgement.
 
 Peer EOF does not imply that the local send direction is closed. Similarly,
 `is_closed() == False` does not imply that both directions remain usable.
+
 Closing a connection and stopping a server are idempotent operations.
 
 A secure receive has a different contract: `b""` is a valid decrypted empty
@@ -559,6 +664,7 @@ corresponding methods with `Duration` arguments.
 
 A timeout around one raw receive does not bound an entire application record or
 secure handshake. Use an application-level deadline for a multi-step exchange.
+
 The secure constructors and message methods do not expose their own timeout
 parameter.
 
@@ -577,10 +683,18 @@ The Python binding contract closes an unsplit connection when an in-progress
 `send()` or `write()` is cancelled. Cancellation of `WriteHalf.send()` shuts
 down the write direction instead.
 
-Do not generalize that binding behavior to Rust future cancellation. The
-native `send()` loop has no cancellation guard that closes the connection when
-its future is dropped. Prefer the dedicated write-timeout API
-for raw timed writes, and explicitly discard failed or cancelled secure sessions.
+For Python secure sessions, the new binding also treats observed cancellation
+of a native handshake, send, or receive as terminal. Further secure I/O is
+rejected, and transport cleanup is requested on Tokio. This policy also covers
+cancellation of an already queued operation and observation of a cancelled
+Python result at the native/Python completion boundary. Use application-level
+deadlines as before, but reconnect after a cancelled secure operation.
+
+Do not generalize those binding guards to direct Rust future cancellation. The
+unchanged native `send()` loop has no cancellation guard that closes the
+connection merely because its future is dropped. Prefer the dedicated
+write-timeout API for raw timed writes, and explicitly close and discard failed
+or cancelled secure sessions in direct Rust code.
 
 ### Python transport API
 
@@ -634,9 +748,10 @@ process-local, not persistent session IDs or authenticated identities.
 
 #### Split connections and pause behavior
 
-`into_split()` is synchronous and consumes the Python connection wrapper. It
-raises `RuntimeError` if the wrapper was already split or an asynchronous
-operation still holds a reference to it.
+`into_split()` is synchronous and consumes a raw Python connection wrapper. It
+raises `RuntimeError` if the wrapper was already split, is being upgraded, has
+already become secure, or an asynchronous operation still holds the raw
+connection. A secure session cannot be converted into raw directional halves.
 
 `ReadHalf` provides `receive()`, `read()`, and `shutdown_read()`. `WriteHalf`
 provides `send()`, `write()`, `flush()`, and `shutdown_write()`. Both expose `id`
@@ -654,6 +769,29 @@ factories. `LocalTransport` is a concrete namespace, not a transport trait.
 Python retains `Listener = Server`, `Stream = Connection`, and
 `Client = Connection`. These aliases do not introduce separate state machines.
 
+### Python secure API
+
+Import the public facade and identity helpers from `taunicorn.security`. Create
+sessions through the asynchronous factories, not by calling `SecureConnection()`.
+
+| API | Purpose |
+| --- | --- |
+| `await SecureConnection.client(connection, *, identity_private_key, server_identity_public_key)` | Transfer an unsplit connection and perform the existing Rust client handshake |
+| `await SecureConnection.server(connection, *, client_identity_public_key, identity_private_key)` | Transfer an unsplit connection and perform the existing Rust server handshake |
+| `await secure.send(plaintext)` | Encrypt and send one `bytes` value |
+| `await secure.receive()` | Authenticate and decrypt one message, returning `bytes` |
+| `await secure.send_msgpack(value)` / `receive_msgpack()` | Serialize or deserialize with the optional Python `msgpack` package |
+| `await secure.close()` | Make the secure session terminal and close its native transport |
+| `secure.is_closed()` | Report native closure or binding-level terminal cancellation state |
+| `secure.connection` | Return the original Python connection for diagnostics and closing, not raw I/O |
+| `generate_identity_private_key()` | Return a fresh raw 32-byte private identity key from Rust |
+| `identity_public_key(identity_private_key)` | Derive the raw 32-byte public identity key in Rust |
+
+The public async methods are Python coroutines; their native counterparts are
+awaitable-returning bindings. Private Python cryptographic state and exact
+legacy exception messages are not part of the compatibility contract. The
+unchanged Rust counters also determine sequence-exhaustion behavior.
+
 ### Rust transport API
 
 The primary public types are `Endpoint`, `Server`, `Connection`, `ReadHalf`,
@@ -662,10 +800,12 @@ The primary public types are `Endpoint`, `Server`, `Connection`, `ReadHalf`,
 
 `Connection::receive(&mut buffer)` returns `ReceiveResult`, whereas
 `Connection::read_timeout(max_bytes, duration)` returns an allocated byte vector.
+
 An empty vector from a non-zero timed read indicates EOF.
 
 `Connection::into_split(self)` consumes the Rust connection and returns concrete
 read and write halves. The ordinary API does not require custom transport traits.
+
 The compatibility aliases are `SocketListener`, `SocketStream`, and
 `SocketClient`.
 
@@ -683,6 +823,7 @@ Both Python queue types expose the same lifecycle and send/receive operations:
 | `queue.is_closed()` | Report whether sending is closed; not whether the buffer is empty |
 
 `BoundedQueue(capacity)` requires a supported capacity of at least one.
+
 Unsupported capacities raise `ValueError`. `capacity()` reports currently
 available slots; `max_capacity()` reports the construction-time limit. These
 values are not memory-size limits.
@@ -702,26 +843,40 @@ transport disconnects.
 
 | Condition | Exception |
 | --- | --- |
-| Invalid endpoint, timeout, capacity, or key length | `ValueError` |
-| Invalid endpoint argument type | `TypeError` |
+| Invalid endpoint, timeout, capacity, key length, or oversized outgoing secure plaintext | `ValueError` |
+| Invalid endpoint argument type, or non-`bytes` secure key/payload | `TypeError` |
 | Operation timeout | `TimeoutError` |
 | Closed, stopped, or directionally shut-down transport | `ConnectionError` |
-| Secure identity, signature, framing, sequence, or authentication failure | Usually `ConnectionError`; key and size validation may raise `ValueError` |
+| Native secure identity, signature, framing, sequence, or authentication failure | `ConnectionError`, apart from the EOF, sequence-exhaustion, and preserved I/O cases below |
 | EOF while assembling a secure frame | `EOFError` |
-| Secure send sequence exhausted | `OverflowError` |
-| Paused transport | `BlockingIOError` |
+| Secure send or receive sequence exhausted | `OverflowError` |
+| Paused raw transport | `BlockingIOError`; an error returned from native secure I/O is mapped by the secure binding instead |
 | Bounded queue has no available slot | `QueueFull` (`BlockingIOError`) |
 | No immediately available queue item | `QueueEmpty` (`BlockingIOError`) |
 | Queue receiver lock is held | `QueueBusy` (`BlockingIOError`) |
 | Queue sending is closed, or a closed queue is drained | `QueueClosed` (`RuntimeError`) |
-| OS I/O failure | `OSError` |
-| Consumed wrapper or unclassified runtime failure | `RuntimeError` |
+| Preserved native `std::io::Error`, or failure to generate an identity key | `OSError` |
+| Consumed/busy wrapper, raw I/O after secure upgrade, or invalid split/upgrade attempt | `RuntimeError` |
+| Secure session already closed or made terminal by cancellation/failure | `ConnectionError` |
+| Missing optional `msgpack` package | `ModuleNotFoundError` |
+| Other unclassified transport runtime failure | `RuntimeError` |
 | Panic propagated by the Rust async bridge | `RustPanic` (`BaseException`) |
 
 `RustPanic` is the async bridge's exported panic type, not a separate lookalike
 exception. As a `BaseException` subclass, it is not covered by a normal
 `except Exception` handler. MessagePack decoding may additionally raise the
 serializer's own errors.
+
+The core still returns `anyhow::Error`. The secure binding recognizes the
+uploaded core's EOF and sequence-exhaustion messages and preserves contained
+`std::io::Error` values; other native security errors become `ConnectionError`.
+
+A paused-transport error returned during native secure I/O is therefore not a
+recoverable Python `BlockingIOError`: it makes that secure session terminal.
+
+Check these mappings when changing the core's error messages. Argument/type
+checks and outgoing-size validation happen before native secure I/O; they are
+not themselves terminal protocol failures.
 
 ### Secure protocol
 
@@ -781,19 +936,35 @@ number. There is no automatic rekey or counter wraparound; establish a new
 session before the sending sequence space is exhausted.
 
 The frame-size constant is not a per-session configuration option. It is also
-not a total memory bound: frame assembly, encryption, and serialization may
-allocate additional buffers. Outgoing oversize checks occur after encryption.
+not a total memory bound: frame assembly, encryption, copying, and serialization
+may allocate additional buffers.
+
+The Python binding rejects plaintext above 67,108,839 bytes before native
+encryption, raising `ValueError` without consuming a sequence number or making
+the session terminal. The unchanged Rust core still validates outgoing frame
+size after encryption. Python's preflight check does not lower the native
+inbound allocation limit, and MessagePack serialization can allocate its output
+before that outgoing check runs.
 
 #### Cross-language compatibility
 
-The Python and Rust sources use matching fixed handshake layouts, key
-schedules, and encrypted-frame encodings. The protocol targets Python/Python,
-Rust/Rust, and both mixed-language client/server combinations.
+Python and Rust now use the same Rust handshake layouts, key schedule, and
+encrypted-frame encoding. The binding introduces no new wire protocol version:
+it delegates to the existing version-2 implementation. The protocol still
+targets Python/Python, Rust/Rust, and both mixed-language client/server
+combinations.
 
 Compatibility requires matching protocol versions, reciprocal identity pins,
-and compatible application encodings. Matching source formats are not a
-substitute for interoperability tests against the exact deployed versions.
-The handshake does not depend on MessagePack encoding.
+and compatible application encodings. MessagePack remains a separate Python
+serialization layer, not a reason to assume identical Python/Rust object
+mappings. The handshake does not depend on MessagePack.
+
+The former Python cryptography implementation used the corresponding version-2
+wire format. Keep both client/server directions against that legacy implementation
+in migration tests when supporting older peers. Shared source code and matching
+formats do not replace interoperability tests against the exact deployed
+builds, and this migration does not promise identical private state or every
+legacy error/edge-case behavior.
 
 ## Limitations and known risks
 
@@ -805,24 +976,50 @@ durable delivery, deduplication, or exactly-once processing.
 
 Secure sequence checks protect message order within a session. They do not
 prevent an application from resubmitting the same operation in a new session.
+
 A successful secure send remains local transport progress, not remote commit.
 
 ### Secure failure recovery
 
-The secure implementations reject invalid identities, signatures, key
-confirmation, frames, sequence numbers, and authentication tags. However,
-validation errors are propagated without a universal automatic-close or
-permanently invalid-session mechanism. Rejection is not the same as guaranteed
-resource cleanup.
+The existing Rust protocol rejects invalid identities, signatures, key
+confirmation, frames, sequence numbers, and authentication tags. The new Python
+binding adds a terminal-session policy around that unchanged implementation:
+a native handshake/message failure or observed Python cancellation prevents
+further secure I/O on the affected session. After a successful upgrade,
+transport cleanup is scheduled on Tokio; invalidation is not a guarantee that
+OS resources have already been released when the error reaches Python.
 
 A cancelled secure receive may already have consumed part of a frame. A failed
 or cancelled secure send may leave transport progress and sequence state
-ambiguous. Continuing the session is not a supported recovery strategy.
+ambiguous. Separate per-direction binding guards prevent subsequent secure
+operations from reusing that session after the failure is observed while
+retaining concurrent send/receive during normal operation.
+
+Argument validation before ownership transfer, invalid payload types, and
+outgoing plaintext-size rejection happen before native secure I/O. They do not
+by themselves poison a live session. MessagePack serialization/deserialization
+errors are also separate from native authentication or framing failures; a
+decode error after successful authentication alone does not automatically close
+the session. Applications must still apply their own invalid-message policy.
+
+A failed or cancelled handshake after ownership transfer leaves the original
+Python wrapper unavailable for raw I/O. A failure to acquire exclusive ownership
+before starting the handshake instead leaves the raw connection in place.
+
+Calling `close()` requests cleanup in either supported state; it does not make
+a failed session reusable.
+
+Direct Rust callers do not receive these Python-binding guards. The unchanged
+Rust secure API has no universal permanently-invalid-session mechanism for
+validation errors or dropped futures. Its callers remain responsible for
+closing and discarding affected sessions.
 
 > [!IMPORTANT]
-> Close and discard the connection after a failed or cancelled secure operation,
-> including handshake failure. Do not retry on the same secure session, bypass
-> the secure layer, or fall back automatically to plaintext.
+> Close and discard the connection after a native secure-operation failure or
+> cancellation, including a handshake failure after ownership transfer. Do not
+> retry on the same secure session, bypass the secure layer, or fall back
+> automatically to plaintext. Local validation and serialization errors are
+> separate cases, not evidence of a failed cryptographic session.
 
 ### Resource and availability limits
 
@@ -835,9 +1032,13 @@ allocation. Deployments that require a lower pre-allocation limit need that
 limit enforced in the framing implementation, not merely in a message handler.
 
 Unbounded queues, slow consumers, large cryptographic operations, and unlimited
-connection handlers can also consume excessive memory or execution time. In
-Python, synchronous cryptographic and serialization work can delay the event
-loop even while native I/O remains Tokio-backed.
+connection handlers can also consume excessive memory or execution time. Secure
+handshake and message cryptography now run in Rust/Tokio rather than in the
+Python protocol implementation; that does not impose a CPU or memory budget.
+
+Python-side MessagePack serialization/deserialization and native-boundary buffer
+conversions can still delay the event loop. Bound work and payload sizes rather
+than assuming that a native binding makes these costs disappear.
 
 ### Security boundary
 
@@ -855,13 +1056,17 @@ private keys. This README does not claim an independent cryptographic audit.
 
 | Symptom | What to check | Action |
 | --- | --- | --- |
-| Native module cannot be imported | Active Python environment, wheel availability, source build output | Install into the running interpreter's environment; inspect native build errors |
-| `taunicorn.security` import fails | `cryptography` and `msgpack` availability | Install both dependencies in the same environment |
+| Native module cannot be imported | Active interpreter, OS/CPU target, ABI tag, runtime libraries, and source build output | Install the matching wheel into the running environment or rebuild for that target; `abi3` is not a universal platform binary |
+| `taunicorn.security` import fails because native security names are missing | Facade and extension from different builds, or an old extension | Rebuild/reinstall the integrated Python package; installing `cryptography` does not add missing native exports |
+| `send_msgpack()` / `receive_msgpack()` raises `ModuleNotFoundError` | Optional `msgpack` dependency | Install `msgpack` in the active environment; byte-oriented secure methods do not require it |
+| Installation still requests `cryptography` | Installed release metadata, lockfiles, legacy module, or another dependency | Remove this security layer's obsolete requirement during integration only if no other code needs it; rebuild and inspect the resulting wheel metadata |
 | Endpoint creation or connection fails | Name, existing listener, backend permissions, server lifecycle | Inspect the OS error and confirm the intended listener is running |
 | Raw receive returns fewer bytes than expected | Stream chunking, not message boundaries | Accumulate a bounded application record or use the secure message API |
 | Raw receive returns `b""` | Requested size and observed peer EOF | Distinguish a zero-size read from EOF; check `at_eof()` |
 | `BlockingIOError` during transport I/O | Local pause state | Resume the appropriate object or correct the lifecycle logic |
-| `into_split()` raises `RuntimeError` | Existing split or in-flight operation holding the wrapper | Finish or cancel and await the operation; do not reuse a consumed wrapper |
+| `into_split()` or secure upgrade raises `RuntimeError` | Existing split/upgrade/secure state or in-flight raw operation | Finish the raw operation before transferring ownership; do not split or re-upgrade a secure session |
+| Raw I/O raises `RuntimeError` after handshake | Connection is already owned by the secure layer | Use `secure.send()` / `secure.receive()`; keep the original connection only for diagnostics and closing |
+| Secure I/O raises a closed/cancelled-session error | Earlier cancellation or native protocol/I/O failure | Close and discard the session; establish a new connection and handshake |
 | Secure handshake stalls | Opposite role, protocol version, peer progress, missing deadline | Bound the handshake and close the raw connection on failure |
 | Secure identity or signature check fails | Pinned public key, local identity, key encoding | Correct provisioning through a trusted path; do not disable verification |
 | Secure sequence, tag, or frame error | Mixed raw/secure I/O, corruption, incompatible version, interrupted operation | Close the session and investigate before establishing another |
@@ -878,6 +1083,7 @@ private keys or sensitive payloads as part of troubleshooting.
 
 Treat local IPC as a trust boundary. Use deliberate endpoint names and
 appropriate OS access controls even when payload encryption is enabled.
+
 Protect persistent Ed25519 private keys and distribute public-key pins through
 an authenticated administrative path.
 
@@ -893,6 +1099,7 @@ bounded queues when channel capacity must apply backpressure, and account for
 the size of each queued object separately.
 
 Set application message limits below the protocol ceiling when appropriate.
+
 Where a threat model requires strict allocation limits, enforce them before
 frame allocation. Do not represent an after-the-fact payload check as an
 inbound memory limit.
@@ -915,13 +1122,45 @@ as an application recovery problem rather than an automatic transport retry.
 
 | Location | Responsibility |
 | --- | --- |
-| `crates/taunicorn/` | Native transport and Rust protocol code |
-| `crates/taunicorn-python/` | PyO3 bindings and Rust-backed Python channels |
-| `python/taunicorn/` | Public Python package, secure layer, and typing assets |
+| `crates/taunicorn/` | Existing native transport and secure protocol; unchanged by the Python security migration |
+| `crates/taunicorn-python/` | PyO3 transport/security bindings, Python-side ownership policy, and Rust-backed Python channels |
+| `python/taunicorn/` | Public package, thin security coroutine facade, optional MessagePack helpers, and typing assets |
 | `python/tests/` | Python tests and native integration coverage |
 | `docs/` | Supporting documentation |
 | `.github/workflows/` | CI, security checks, and publishing workflows |
 | Root `Cargo.toml` and `pyproject.toml` | Workspace, dependency, and packaging configuration |
+
+### Integrating the Python security replacement
+
+The integration package supplies binding code and Python package changes, not a
+replacement Rust core. For this README's root-level `python/` layout, place the
+new native module at `crates/taunicorn-python/src/security_binding.rs` and the
+replacement facade at `python/taunicorn/security.py`. Merge the binding ownership
+and module-registration changes into `crates/taunicorn-python/src/lib.rs`.
+
+Keep the existing `channel.rs` and all of `crates/taunicorn/`.
+
+Merge the native security declarations into `python/taunicorn/_taunicorn.pyi`.
+
+When exporting the public secure API from `python/taunicorn/__init__.py`, import
+it from `.security` after any native wildcard import so the coroutine facade is
+not overwritten by the native awaitable-returning class. Retain other exports
+and the existing `py.typed` marker.
+
+The binding's `tokio-util` dependency enables `rt` for its cancellation-token
+guards. Preserve the supplied PyO3 ABI configuration and the existing Rust core
+manifest. Merge packaging changes instead of replacing unrelated dependencies
+or metadata. Remove `cryptography` from Python runtime requirements only when
+no other package code needs it; optionally declare `msgpack` as an extra.
+
+Update applicable lockfiles in a controlled development change before using
+`--locked` builds.
+
+The integration archive's example puts Python sources and `pyproject.toml`
+beside the binding crate. That is not the root-level layout documented here:
+copy its Python assets into `python/taunicorn/` and retain the root Maturin paths
+shown below. Copy its supplied tests into `python/tests/` when using this
+README's test commands. Do not create a second Python package tree by accident.
 
 ### Local checks
 
@@ -950,6 +1189,21 @@ uv run pytest python/tests
 uv build
 ```
 
+To explicitly rebuild the extension after integrating the binding, use Maturin
+from the repository root in an activated development environment with Maturin,
+pytest, and any required test extras installed:
+
+```bash
+maturin develop --release
+python -m pytest -q python/tests
+maturin build --release --locked --out dist
+```
+
+The last command assumes the workspace lockfile already includes the integrated
+binding dependencies. A source-only Python test against an older installed
+extension is not validation of the new binding. Run native integration tests
+against the extension just built, then test the wheel in a clean environment.
+
 ### Packaging and typing
 
 Maturin is the documented PEP 517 build backend. Its binding configuration points
@@ -967,9 +1221,62 @@ module-name = "taunicorn._taunicorn"
 Keep build-system version requirements in `pyproject.toml` rather than copying
 independent pins into this README.
 
+The binding crate builds the `_taunicorn` `cdylib`, and Maturin packages it as
+`taunicorn._taunicorn` alongside the public Python modules. Cryptographic
+operations come from its existing `taunicorn` Rust dependency rather than a
+separate Python `cryptography` dependency.
+
+The retained PyO3 `abi3-py310` feature targets a `cp310-abi3` wheel for compatible
+GIL-enabled CPython versions from 3.10. It does not cover free-threaded CPython
+with that wheel and does not remove platform differences. Linux/glibc,
+Linux/musl, Windows, macOS, and their CPU architectures require appropriate
+build targets. Produce Linux release wheels with the intended Manylinux or
+Musllinux compatibility and test them on the supported targets; a successful
+local build is not proof of wheel portability.
+
+Keep the supported interpreter and platform matrix in the actual manifests and
+CI configuration. Build and install the extension and facade together. Inspect
+wheel contents and runtime dependency metadata to confirm that this security
+layer no longer declares `cryptography`; other dependencies may still require
+it. Do not remove an unrelated dependency merely to make that check pass.
+
 The Python package includes `_taunicorn.pyi` and `py.typed` for PEP 561 typing.
-The native stub describes awaitable transport operations, synchronous state
-methods, split halves, queues, queue exceptions, and compatibility aliases.
+
+The native stub now also describes the secure class and identity helpers, in
+addition to awaitable transport operations, synchronous state methods, split
+halves, queues, exceptions, and compatibility aliases. The public `security.py`
+facade retains coroutine signatures and optional MessagePack helpers; the native
+secure class itself exposes byte-oriented methods, not Python-object MessagePack
+methods.
+
+### Native security integration status
+
+The supplied integration report records 13 passing Python-facade tests using a
+simulated native module. Those checks cover delegation, keyword arguments,
+connection-object identity, coroutine/task behavior, byte payloads, optional
+MessagePack handling, and cancellation forwarding. Python 3.10 syntax, TOML
+parsing, and application of the binding patch to the uploaded source were also
+reported as checked.
+
+The native integration-test module was skipped when that package was prepared:
+no Rust compiler or compiled extension was available. No Rust/PyO3 compilation,
+linking, native handshake, legacy-Python interoperability run, Maturin wheel
+build, or target ABI/platform matrix was completed as part of those checks.
+
+These are source-integration results, not a tested release or a cryptographic
+audit. Updating this README does not change that validation status.
+
+Before release, compile the binding and run the supplied native tests against
+the built extension. Exercise both client/server roles, wrong identity pins,
+empty and binary messages, concurrent send/receive, raw-I/O rejection after
+upgrade, cancellation, closing, and size/error boundaries. Test both roles
+against the legacy Python implementation when supporting older peers; that
+comparison needs `cryptography` only in its isolated legacy-test environment.
+
+Finally, install and exercise each target wheel in clean environments, including
+a byte-only environment without `cryptography` or `msgpack` and a separate
+MessagePack-enabled environment. Recorded facade checks do not substitute for
+any of those native or distribution checks.
 
 ### CI and publishing
 
@@ -990,6 +1297,7 @@ the actual matrix and release gates.
 
 Python publishing is documented as release-triggered, with PEP 740 attestations
 and OIDC-based PyPI Trusted Publishing through a `pypi` environment.
+
 Rust publishing is separate, explicitly gated, and uses a protected `crates-io`
 environment with short-lived registry credentials. Configure repository and
 publisher trust for the exact workflow rather than assuming the README enables

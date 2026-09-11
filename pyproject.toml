@@ -55,3 +55,4 @@ manifest-path = "crates/taunicorn-python/Cargo.toml"
 bindings = "pyo3"
 python-source = "python"
 module-name = "taunicorn._taunicorn"
+strip = true

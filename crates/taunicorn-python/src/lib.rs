@@ -6,12 +6,16 @@
 //! truth for connection state, EOF, half-close, ordering, and cancellation semantics.
 
 mod channel;
+mod security;
+
 use pyo3_async_runtimes::err::RustPanic;
+use security::SecureSession;
 use taunicorn::{
     Connection as RustConnection, ConnectionInfo as RustConnectionInfo, Endpoint as RustEndpoint,
     LocalTransport as RustLocalTransport, ReadHalf as RustReadHalf, ReceiveResult,
     Server as RustServer, ServerInfo as RustServerInfo, WriteHalf as RustWriteHalf,
 };
+use tokio_util::sync::CancellationToken;
 
 use pyo3::exceptions::{
     PyBlockingIOError, PyConnectionError, PyOSError, PyRuntimeError, PyTimeoutError, PyTypeError,
@@ -439,46 +443,162 @@ impl PyServer {
 // Connection
 // -------------------------------------------------------------------------------------------------
 
+// Only the Python binding changes ownership representation. The Rust core is untouched.
+// During the handshake, the existing Rust SecureConnection constructor owns the raw value.
+enum ConnectionSlot {
+    Plain(Arc<RustConnection>),
+    Upgrading(CancellationToken),
+    Secure(Arc<SecureSession>),
+    Consumed,
+}
+
+#[derive(Clone)]
+enum ConnectionHandle {
+    Plain(Arc<RustConnection>),
+    Secure(Arc<SecureSession>),
+}
+
+impl std::ops::Deref for ConnectionHandle {
+    type Target = RustConnection;
+
+    fn deref(&self) -> &RustConnection {
+        match self {
+            Self::Plain(connection) => connection.as_ref(),
+            Self::Secure(session) => session.inner.connection(),
+        }
+    }
+}
+
+impl ConnectionHandle {
+    fn is_closed(&self) -> bool {
+        match self {
+            Self::Plain(connection) => connection.is_closed(),
+            Self::Secure(session) => session.is_closed(),
+        }
+    }
+
+    fn is_started(&self) -> bool {
+        !self.is_closed()
+    }
+    fn is_active(&self) -> bool {
+        !self.is_closed()
+    }
+    fn is_available(&self) -> bool {
+        !self.is_closed() && !self.is_paused()
+    }
+
+    fn is_read_shutdown(&self) -> bool {
+        self.is_closed() || std::ops::Deref::deref(self).is_read_shutdown()
+    }
+
+    fn is_write_shutdown(&self) -> bool {
+        self.is_closed() || std::ops::Deref::deref(self).is_write_shutdown()
+    }
+
+    fn info(&self) -> RustConnectionInfo {
+        let mut info = std::ops::Deref::deref(self).info();
+        if self.is_closed() {
+            info.is_closed = true;
+            info.is_read_shutdown = true;
+            info.is_write_shutdown = true;
+        }
+        info
+    }
+}
+
 #[pyclass(name = "Connection")]
 pub struct PyConnection {
-    // The Option exists only to model Rust's consuming `into_split(self)` operation. It is not a
-    // second transport state machine. I/O futures clone the Arc briefly and never hold this mutex
-    // across `.await`, so receive and send remain fully duplex.
-    inner: StdMutex<Option<Arc<RustConnection>>>,
+    // Never keep a blocking mutex guard across an await or a call into Python.
+    inner: StdMutex<ConnectionSlot>,
 }
 
 impl PyConnection {
     fn from_rust(inner: RustConnection) -> Self {
-        Self { inner: StdMutex::new(Some(Arc::new(inner))) }
+        Self { inner: StdMutex::new(ConnectionSlot::Plain(Arc::new(inner))) }
     }
 
-    fn connection(&self) -> PyResult<Arc<RustConnection>> {
-        self.inner
+    fn connection(&self) -> PyResult<ConnectionHandle> {
+        let slot = self
+            .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err(" connection wrapper state is poisoned"))?
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| PyRuntimeError::new_err("Connection was consumed by into_split()"))
+            .map_err(|_| PyRuntimeError::new_err("connection wrapper state is poisoned"))?;
+        match &*slot {
+            ConnectionSlot::Plain(connection) => {
+                Ok(ConnectionHandle::Plain(Arc::clone(connection)))
+            }
+            ConnectionSlot::Secure(session) => Ok(ConnectionHandle::Secure(Arc::clone(session))),
+            ConnectionSlot::Upgrading(token) if token.is_cancelled() => {
+                Err(PyConnectionError::new_err(
+                    "secure handshake failed or was cancelled; connect again",
+                ))
+            }
+            ConnectionSlot::Upgrading(_) => Err(PyRuntimeError::new_err(
+                "Connection is owned by an in-progress secure handshake",
+            )),
+            ConnectionSlot::Consumed => {
+                Err(PyRuntimeError::new_err("Connection was consumed by into_split()"))
+            }
+        }
+    }
+
+    fn plain_connection(&self) -> PyResult<Arc<RustConnection>> {
+        match self.connection()? {
+            ConnectionHandle::Plain(connection) => Ok(connection),
+            ConnectionHandle::Secure(_) => Err(PyRuntimeError::new_err(
+                "raw I/O is disabled after a secure upgrade; use SecureConnection.send/receive/close",
+            )),
+        }
+    }
+
+    fn take_plain(&self, next: ConnectionSlot, operation: &str) -> PyResult<RustConnection> {
+        let mut slot = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("connection wrapper state is poisoned"))?;
+        let previous = std::mem::replace(&mut *slot, ConnectionSlot::Consumed);
+        match previous {
+            ConnectionSlot::Plain(connection) => match Arc::try_unwrap(connection) {
+                Ok(connection) => {
+                    *slot = next;
+                    Ok(connection)
+                }
+                Err(connection) => {
+                    *slot = ConnectionSlot::Plain(connection);
+                    Err(PyRuntimeError::new_err(format!(
+                        "cannot {operation} Connection while an async operation is still pending",
+                    )))
+                }
+            },
+            previous => {
+                *slot = previous;
+                Err(PyRuntimeError::new_err(format!(
+                    "cannot {operation} Connection: already split, upgrading, or secured",
+                )))
+            }
+        }
     }
 
     fn take_for_split(&self) -> PyResult<RustConnection> {
-        let mut guard = self
+        self.take_plain(ConnectionSlot::Consumed, "split")
+    }
+
+    fn begin_secure(&self, token: CancellationToken) -> PyResult<RustConnection> {
+        self.take_plain(ConnectionSlot::Upgrading(token), "secure-upgrade")
+    }
+
+    fn finish_secure(&self, session: Arc<SecureSession>) -> PyResult<()> {
+        let mut slot = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err(" connection wrapper state is poisoned"))?;
-
-        let connection = guard.take().ok_or_else(|| {
-            PyRuntimeError::new_err("Connection was already consumed by into_split()")
-        })?;
-
-        match Arc::try_unwrap(connection) {
-            Ok(connection) => Ok(connection),
-            Err(connection) => {
-                *guard = Some(connection);
-                Err(PyRuntimeError::new_err(
-                    "cannot split Connection while an async operation is still pending",
-                ))
+            .map_err(|_| PyRuntimeError::new_err("connection wrapper state is poisoned"))?;
+        match &*slot {
+            ConnectionSlot::Upgrading(token) if !token.is_cancelled() => {
+                *slot = ConnectionSlot::Secure(session);
+                Ok(())
             }
+            _ => Err(PyConnectionError::new_err(
+                "secure upgrade was cancelled or is no longer active",
+            )),
         }
     }
 }
@@ -518,7 +638,7 @@ impl PyConnection {
     /// normal stream convention. `read(0)` also returns `b""` without waiting; use `at_eof()` when
     /// the distinction matters.
     pub fn receive<'py>(&self, py: Python<'py>, max_bytes: usize) -> PyResult<Bound<'py, PyAny>> {
-        let connection = self.connection()?;
+        let connection = self.plain_connection()?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let data = receive_bytes(connection, max_bytes).await?;
@@ -544,7 +664,7 @@ impl PyConnection {
         max_bytes: usize,
         timeout: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let connection = self.connection()?;
+        let connection = self.plain_connection()?;
         let timeout = duration_from_seconds(timeout)?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -555,7 +675,7 @@ impl PyConnection {
 
     /// Send the complete buffer. Same-direction sends are serialized by `Connection`.
     pub fn send<'py>(&self, py: Python<'py>, data: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
-        let connection = self.connection()?;
+        let connection = self.plain_connection()?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let mut cancellation_guard =
@@ -571,7 +691,7 @@ impl PyConnection {
     /// One possibly-partial write. On Python-side cancellation the connection is closed because the
     /// caller does not receive the partial progress count.
     pub fn write<'py>(&self, py: Python<'py>, data: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
-        let connection = self.connection()?;
+        let connection = self.plain_connection()?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let mut cancellation_guard =
@@ -610,7 +730,7 @@ impl PyConnection {
         data: Vec<u8>,
         timeout: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let connection = self.connection()?;
+        let connection = self.plain_connection()?;
         let timeout = duration_from_seconds(timeout)?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -625,21 +745,21 @@ impl PyConnection {
     }
 
     pub fn flush<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let connection = self.connection()?;
+        let connection = self.plain_connection()?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             connection.flush().await.map_err(to_py_err)
         })
     }
 
     pub fn shutdown_read<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let connection = self.connection()?;
+        let connection = self.plain_connection()?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             connection.shutdown_read().await.map_err(to_py_err)
         })
     }
 
     pub fn shutdown_write<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let connection = self.connection()?;
+        let connection = self.plain_connection()?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let mut cancellation_guard =
                 CloseConnectionUnlessCompleted::new(Arc::clone(&connection));
@@ -652,15 +772,48 @@ impl PyConnection {
     }
 
     pub fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let connection = self.connection()?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mut cancellation_guard =
-                CloseConnectionUnlessCompleted::new(Arc::clone(&connection));
-            let result = connection.close().await.map_err(to_py_err);
-            if result.is_ok() {
-                cancellation_guard.completed();
+        let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
+        // Cancelling an upgrade drops the Rust future that exclusively owns the raw socket.
+        // No Python borrow or blocking mutex guard crosses the await boundary.
+        let target = {
+            let slot = self
+                .inner
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("connection wrapper state is poisoned"))?;
+            match &*slot {
+                ConnectionSlot::Upgrading(token) => {
+                    token.cancel();
+                    None
+                }
+                ConnectionSlot::Plain(connection) => {
+                    Some(ConnectionHandle::Plain(Arc::clone(connection)))
+                }
+                ConnectionSlot::Secure(session) => {
+                    session.cancel.cancel();
+                    Some(ConnectionHandle::Secure(Arc::clone(session)))
+                }
+                ConnectionSlot::Consumed => {
+                    return Err(PyRuntimeError::new_err(
+                        "Connection was consumed by into_split()",
+                    ));
+                }
             }
-            result
+        };
+        pyo3_async_runtimes::tokio::future_into_py_with_locals(py, locals, async move {
+            match target {
+                None => Ok(()),
+                Some(ConnectionHandle::Plain(connection)) => {
+                    let mut guard = CloseConnectionUnlessCompleted::new(Arc::clone(&connection));
+                    let result = connection.close().await.map_err(to_py_err);
+                    if result.is_ok() {
+                        guard.completed();
+                    }
+                    result
+                }
+                Some(ConnectionHandle::Secure(session)) => {
+                    session.inner.close().await.map_err(to_py_err)
+                }
+            }
         })
     }
 
@@ -766,7 +919,9 @@ impl PyConnection {
                 connection.is_write_shutdown(),
                 connection.peer_sent_eof(),
             ),
-            Err(_) => "Connection(consumed_by_into_split=True)".to_owned(),
+            Err(_) => {
+                "Connection(unavailable_during_or_after_ownership_transfer=True)".to_owned()
+            }
         }
     }
 }
@@ -952,6 +1107,7 @@ pub fn _taunicorn(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyReadHalf>()?;
     m.add_class::<PyWriteHalf>()?;
     m.add_class::<PyLocalTransport>()?;
+    security::register(m)?;
     // Compatibility aliases for the previous Python-facing names. They refer to the new concrete
     // classes; no legacy wrapper implementation remains.
     m.add("Listener", m.getattr("Server")?)?;
