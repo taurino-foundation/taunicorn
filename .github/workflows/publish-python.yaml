@@ -85,7 +85,6 @@ jobs:
   sdist:
     name: Source distribution
     needs: validate
-
     runs-on: ubuntu-latest
 
     permissions:
@@ -176,16 +175,22 @@ jobs:
         run: |
           wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
           test -n "$wheel"
+
           case "$(basename "$wheel")" in
             *linux*x86_64*.whl) ;;
-            *) echo "Unexpected Linux wheel: $wheel" >&2; exit 1 ;;
+            *)
+              echo "Unexpected Linux wheel: $wheel" >&2
+              exit 1
+              ;;
           esac
+
           echo "Wheel: $wheel"
 
       - name: Smoke test Python 3.14
         shell: bash
         run: |
           wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
+
           uv run \
             --isolated \
             --no-project \
@@ -256,16 +261,22 @@ jobs:
         run: |
           wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
           test -n "$wheel"
+
           case "$(basename "$wheel")" in
             *win_amd64.whl) ;;
-            *) echo "Unexpected Windows wheel: $wheel" >&2; exit 1 ;;
+            *)
+              echo "Unexpected Windows wheel: $wheel" >&2
+              exit 1
+              ;;
           esac
+
           echo "Wheel: $wheel"
 
       - name: Smoke test Python 3.14
         shell: bash
         run: |
           wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
+
           uv run \
             --isolated \
             --no-project \
@@ -336,16 +347,22 @@ jobs:
         run: |
           wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
           test -n "$wheel"
+
           case "$(basename "$wheel")" in
             *macosx*arm64.whl) ;;
-            *) echo "Unexpected macOS wheel: $wheel" >&2; exit 1 ;;
+            *)
+              echo "Unexpected macOS wheel: $wheel" >&2
+              exit 1
+              ;;
           esac
+
           echo "Wheel: $wheel"
 
       - name: Smoke test Python 3.14
         shell: bash
         run: |
           wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
+
           uv run \
             --isolated \
             --no-project \
@@ -366,101 +383,109 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # FreeBSD x86_64
+  #
   # Core target: x86_64-unknown-freebsd
   #
-  # GitHub has no hosted FreeBSD runner. This job requires a self-hosted runner
-  # labelled: self-hosted, freebsd, x64
-  #
-  # Required on the runner:
-  #   - FreeBSD amd64/x86_64
-  #   - stable Rust (cargo + rustc)
-  #   - Python 3.14 available as python3.14
-  #   - native compiler/linker toolchain
-  #   - network access to crates.io and PyPI
+  # Disabled for now because GitHub has no hosted FreeBSD runner.
+  # Re-enable once a self-hosted FreeBSD x86_64 runner is available.
   # ---------------------------------------------------------------------------
 
-  wheel-freebsd-x86_64:
-    name: FreeBSD x86_64
-    needs: validate
-    runs-on: [self-hosted, freebsd, x64]
-
-    permissions:
-      contents: read
-
-    timeout-minutes: 60
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Verify FreeBSD x86_64 runner
-        shell: sh
-        run: |
-          test "$(uname -s)" = "FreeBSD"
-          test "$(uname -m)" = "amd64"
-          rust_host="$(rustc -vV | sed -n 's/^host: //p')"
-          test "$rust_host" = "x86_64-unknown-freebsd"
-          python3.14 --version
-          cargo --version
-          rustc --version
-
-      - name: Install pinned Maturin
-        shell: sh
-        run: |
-          cargo install \
-            maturin \
-            --version "${MATURIN_VERSION#v}" \
-            --locked
-          maturin --version
-
-      - name: Build ABI3 wheel
-        shell: sh
-        run: |
-          rm -rf dist
-          mkdir -p dist
-          maturin build \
-            --release \
-            --locked \
-            --compatibility pypi \
-            --manifest-path crates/taunicorn-python/Cargo.toml \
-            --out dist
-
-      - name: Verify ABI3 wheel
-        shell: sh
-        run: |
-          wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
-          test -n "$wheel"
-          case "$(basename "$wheel")" in
-            *freebsd*.whl) ;;
-            *) echo "Unexpected FreeBSD wheel: $wheel" >&2; exit 1 ;;
-          esac
-          echo "Wheel: $wheel"
-
-      - name: Smoke test Python 3.14
-        shell: sh
-        run: |
-          wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
-          rm -rf .venv-wheel-test
-          python3.14 -m venv .venv-wheel-test
-          . .venv-wheel-test/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install "$wheel" pytest
-          python -m pytest \
-            -q \
-            python/tests/test_local_socket_asyncio.py
-
-      - name: Upload wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dist-freebsd-x86_64
-          path: dist/*.whl
-          if-no-files-found: error
-          retention-days: 1
+  # wheel-freebsd-x86_64:
+  #   name: FreeBSD x86_64
+  #   needs: validate
+  #   runs-on: [self-hosted, freebsd, x64]
+  #
+  #   permissions:
+  #     contents: read
+  #
+  #   timeout-minutes: 60
+  #
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  #       with:
+  #         persist-credentials: false
+  #
+  #     - name: Verify FreeBSD x86_64 runner
+  #       shell: sh
+  #       run: |
+  #         test "$(uname -s)" = "FreeBSD"
+  #         test "$(uname -m)" = "amd64"
+  #
+  #         rust_host="$(rustc -vV | sed -n 's/^host: //p')"
+  #         test "$rust_host" = "x86_64-unknown-freebsd"
+  #
+  #         python3.14 --version
+  #         cargo --version
+  #         rustc --version
+  #
+  #     - name: Install pinned Maturin
+  #       shell: sh
+  #       run: |
+  #         cargo install \
+  #           maturin \
+  #           --version "${MATURIN_VERSION#v}" \
+  #           --locked
+  #
+  #         maturin --version
+  #
+  #     - name: Build ABI3 wheel
+  #       shell: sh
+  #       run: |
+  #         rm -rf dist
+  #         mkdir -p dist
+  #
+  #         maturin build \
+  #           --release \
+  #           --locked \
+  #           --compatibility pypi \
+  #           --manifest-path crates/taunicorn-python/Cargo.toml \
+  #           --out dist
+  #
+  #     - name: Verify ABI3 wheel
+  #       shell: sh
+  #       run: |
+  #         wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
+  #         test -n "$wheel"
+  #
+  #         case "$(basename "$wheel")" in
+  #           *freebsd*.whl) ;;
+  #           *)
+  #             echo "Unexpected FreeBSD wheel: $wheel" >&2
+  #             exit 1
+  #             ;;
+  #         esac
+  #
+  #         echo "Wheel: $wheel"
+  #
+  #     - name: Smoke test Python 3.14
+  #       shell: sh
+  #       run: |
+  #         wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
+  #
+  #         rm -rf .venv-wheel-test
+  #         python3.14 -m venv .venv-wheel-test
+  #         . .venv-wheel-test/bin/activate
+  #
+  #         python -m pip install --upgrade pip
+  #         python -m pip install "$wheel" pytest
+  #
+  #         python -m pytest \
+  #           -q \
+  #           python/tests/test_local_socket_asyncio.py
+  #
+  #     - name: Upload wheel
+  #       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+  #       with:
+  #         name: dist-freebsd-x86_64
+  #         path: dist/*.whl
+  #         if-no-files-found: error
+  #         retention-days: 1
 
   # ---------------------------------------------------------------------------
   # Verify minimum Python version
+  #
+  # ABI3 means one platform is enough to verify the minimum CPython ABI.
   # ---------------------------------------------------------------------------
 
   compatibility-test:
@@ -496,6 +521,7 @@ jobs:
         run: |
           wheel="$(find dist -maxdepth 1 -type f -name '*abi3*.whl' -print -quit)"
           test -n "$wheel"
+
           uv run \
             --isolated \
             --no-project \
@@ -508,6 +534,13 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Publish
+  #
+  # Active release wheels:
+  #   - x86_64-unknown-linux-gnu
+  #   - x86_64-pc-windows-msvc
+  #   - aarch64-apple-darwin
+  #
+  # FreeBSD is intentionally excluded until a runner is available.
   # ---------------------------------------------------------------------------
 
   publish:
@@ -518,7 +551,6 @@ jobs:
       - wheel-linux-x86_64
       - wheel-windows-x86_64
       - wheel-macos-arm64
-      - wheel-freebsd-x86_64
       - compatibility-test
 
     runs-on: ubuntu-latest
@@ -558,17 +590,24 @@ jobs:
         shell: bash
         run: |
           test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 1
-          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 4
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 3
 
           test -n "$(find dist -maxdepth 1 -name '*linux*x86_64*.whl' -print -quit)"
           test -n "$(find dist -maxdepth 1 -name '*win_amd64*.whl' -print -quit)"
           test -n "$(find dist -maxdepth 1 -name '*macosx*arm64*.whl' -print -quit)"
-          test -n "$(find dist -maxdepth 1 -name '*freebsd*.whl' -print -quit)"
+
+          if find dist -maxdepth 1 -name '*freebsd*.whl' -print -quit | grep -q .; then
+            echo "Unexpected FreeBSD wheel in this release" >&2
+            exit 1
+          fi
 
           for wheel in dist/*.whl; do
             case "$(basename "$wheel")" in
               *abi3*.whl) ;;
-              *) echo "Non-ABI3 wheel found: $wheel" >&2; exit 1 ;;
+              *)
+                echo "Non-ABI3 wheel found: $wheel" >&2
+                exit 1
+                ;;
             esac
           done
 
