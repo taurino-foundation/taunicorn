@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey};
 
-use taunicorn::{Connection, ReceiveResult};
+use crate::{Connection, ReceiveResult};
 
 // =============================================================================
 // Constants
@@ -126,9 +126,7 @@ pub fn generate_identity_private_key() -> Result<[u8; ED25519_PRIVATE_KEY_SIZE]>
 pub fn identity_public_key(
     identity_private_key: &[u8; ED25519_PRIVATE_KEY_SIZE],
 ) -> [u8; ED25519_PUBLIC_KEY_SIZE] {
-    SigningKey::from_bytes(identity_private_key)
-        .verifying_key()
-        .to_bytes()
+    SigningKey::from_bytes(identity_private_key).verifying_key().to_bytes()
 }
 
 // =============================================================================
@@ -341,10 +339,7 @@ impl SecureConnection {
             .cipher
             .decrypt(
                 Nonce::from_slice(&nonce),
-                Payload {
-                    msg: &frame[ENCRYPTED_FRAME_HEADER_SIZE..],
-                    aad: &aad,
-                },
+                Payload { msg: &frame[ENCRYPTED_FRAME_HEADER_SIZE..], aad: &aad },
             )
             .map_err(|_| anyhow!("message authentication failed"))?;
 
@@ -393,13 +388,7 @@ impl SecureConnection {
 
         let ciphertext = state
             .cipher
-            .encrypt(
-                Nonce::from_slice(&nonce),
-                Payload {
-                    msg: plaintext,
-                    aad: &aad,
-                },
-            )
+            .encrypt(Nonce::from_slice(&nonce), Payload { msg: plaintext, aad: &aad })
             .map_err(|_| anyhow!("message encryption failed"))?;
 
         let mut frame = Vec::with_capacity(ENCRYPTED_FRAME_HEADER_SIZE + ciphertext.len());
@@ -630,11 +619,7 @@ fn create_cipher(key: &[u8; AEAD_KEY_SIZE]) -> Result<ChaCha20Poly1305> {
 /// positions so changing one field size updates the complete parser layout.
 fn decode_client_hello(data: &[u8]) -> Result<ClientHello> {
     if data.len() != HELLO_SIZE {
-        bail!(
-            "invalid client hello size: expected {}, received {}",
-            HELLO_SIZE,
-            data.len(),
-        );
+        bail!("invalid client hello size: expected {}, received {}", HELLO_SIZE, data.len(),);
     }
 
     if data[0] != CLIENT_HELLO {
@@ -642,11 +627,7 @@ fn decode_client_hello(data: &[u8]) -> Result<ClientHello> {
     }
 
     if data[1] != VERSION {
-        bail!(
-            "invalid client hello version: expected {}, received {}",
-            VERSION,
-            data[1],
-        );
+        bail!("invalid client hello version: expected {}, received {}", VERSION, data[1],);
     }
 
     let mut offset = HELLO_HEADER_SIZE;
@@ -661,12 +642,7 @@ fn decode_client_hello(data: &[u8]) -> Result<ClientHello> {
 
     debug_assert_eq!(offset, HELLO_SIZE);
 
-    Ok(ClientHello {
-        ephemeral_public_key,
-        identity_public_key,
-        nonce,
-        signature,
-    })
+    Ok(ClientHello { ephemeral_public_key, identity_public_key, nonce, signature })
 }
 
 /// Parses and validates a fixed-size server handshake frame.
@@ -675,11 +651,7 @@ fn decode_client_hello(data: &[u8]) -> Result<ClientHello> {
 /// server message type.
 fn decode_server_hello(data: &[u8]) -> Result<ServerHello> {
     if data.len() != HELLO_SIZE {
-        bail!(
-            "invalid server hello size: expected {}, received {}",
-            HELLO_SIZE,
-            data.len(),
-        );
+        bail!("invalid server hello size: expected {}, received {}", HELLO_SIZE, data.len(),);
     }
 
     if data[0] != SERVER_HELLO {
@@ -687,11 +659,7 @@ fn decode_server_hello(data: &[u8]) -> Result<ServerHello> {
     }
 
     if data[1] != VERSION {
-        bail!(
-            "invalid server hello version: expected {}, received {}",
-            VERSION,
-            data[1],
-        );
+        bail!("invalid server hello version: expected {}, received {}", VERSION, data[1],);
     }
 
     let mut offset = HELLO_HEADER_SIZE;
@@ -706,12 +674,7 @@ fn decode_server_hello(data: &[u8]) -> Result<ServerHello> {
 
     debug_assert_eq!(offset, HELLO_SIZE);
 
-    Ok(ServerHello {
-        ephemeral_public_key,
-        identity_public_key,
-        nonce,
-        signature,
-    })
+    Ok(ServerHello { ephemeral_public_key, identity_public_key, nonce, signature })
 }
 
 /// Encodes a client hello into the deterministic cross-language wire format.
@@ -755,17 +718,12 @@ fn encode_server_hello(hello: &ServerHello) -> Vec<u8> {
 /// Centralizing bounds checking removes repeated slicing arithmetic from the
 /// handshake decoders.
 fn take_array<const N: usize>(data: &[u8], offset: &mut usize) -> Result<[u8; N]> {
-    let end = offset
-        .checked_add(N)
-        .ok_or_else(|| anyhow!("protocol offset overflow"))?;
+    let end = offset.checked_add(N).ok_or_else(|| anyhow!("protocol offset overflow"))?;
 
-    let bytes = data
-        .get(*offset..end)
-        .ok_or_else(|| anyhow!("protocol field exceeds frame boundary"))?;
+    let bytes =
+        data.get(*offset..end).ok_or_else(|| anyhow!("protocol field exceeds frame boundary"))?;
 
-    let value = bytes
-        .try_into()
-        .map_err(|_| anyhow!("invalid fixed-size protocol field"))?;
+    let value = bytes.try_into().map_err(|_| anyhow!("invalid fixed-size protocol field"))?;
 
     *offset = end;
 
@@ -812,10 +770,8 @@ async fn read_exact(connection: &Connection, size: usize) -> Result<Vec<u8>> {
 async fn read_frame(connection: &Connection) -> Result<Vec<u8>> {
     let header = read_exact(connection, FRAME_LENGTH_SIZE).await?;
 
-    let size_bytes: [u8; FRAME_LENGTH_SIZE] = header
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow!("invalid frame-length header"))?;
+    let size_bytes: [u8; FRAME_LENGTH_SIZE] =
+        header.as_slice().try_into().map_err(|_| anyhow!("invalid frame-length header"))?;
 
     let size = u32::from_be_bytes(size_bytes) as usize;
 
@@ -840,15 +796,11 @@ async fn write_frame(connection: &Connection, payload: &[u8]) -> Result<()> {
     }
 
     if payload.len() > MAX_FRAME_SIZE {
-        bail!(
-            "frame exceeds maximum size: {} > {}",
-            payload.len(),
-            MAX_FRAME_SIZE,
-        );
+        bail!("frame exceeds maximum size: {} > {}", payload.len(), MAX_FRAME_SIZE,);
     }
 
-    let size =
-        u32::try_from(payload.len()).map_err(|_| anyhow!("frame length does not fit into u32"))?;
+    let size = u32::try_from(payload.len())
+        .map_err(|_| anyhow!("frame length does not fit into u32"))?;
 
     let mut frame = Vec::with_capacity(FRAME_LENGTH_SIZE + payload.len());
 
