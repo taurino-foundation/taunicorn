@@ -19,7 +19,11 @@ from ._taunicorn import (
     WriteHalf,
     __version__,
 )
-
+from .secure import (
+SecureConnection,
+generate_identity_private_key,
+identity_public_key
+)
 __all__ = [
     "__version__",
     "Endpoint",
@@ -36,6 +40,9 @@ __all__ = [
     "BoundedQueue",
     "UnboundedQueue",
     "QueueClosed",
+    "SecureConnection",
+    "generate_identity_private_key",
+    "identity_public_key",
     "QueueFull",
     "QueueEmpty",
     "QueueBusy",
