@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 )
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
 from taunicorn import Connection
 
 # =============================================================================
@@ -1034,8 +1035,3 @@ def _validate_shared_secret(
         b"\x00" * 32,
     ):
         raise ConnectionError("invalid X25519 shared secret")
-
-
-
-
-
