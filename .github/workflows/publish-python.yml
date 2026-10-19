@@ -1,0 +1,316 @@
+
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Build and publish ABI3 wheels for CPython 3.9+.
+# WARNING: Published GitHub releases automatically publish to PyPI.
+
+name: Publish Python
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.11.18"
+  MATURIN_VERSION: "v1.14.1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Validate version and ABI3 compatibility
+  # ---------------------------------------------------------------------------
+
+  validate:
+    name: Validate version and ABI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate tag, metadata, and ABI3 feature
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python3 - <<'PYCODE'
+          import os
+          import pathlib
+          import tomllib
+
+          root = tomllib.loads(
+              pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
+          )
+
+          member = tomllib.loads(
+              pathlib.Path(
+                  "crates/taunicorn-python/Cargo.toml"
+              ).read_text(encoding="utf-8")
+          )
+
+          project = tomllib.loads(
+              pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          )
+
+          version = member["package"]["version"]
+
+          if isinstance(version, dict) and version.get("workspace"):
+              version = root["workspace"]["package"]["version"]
+
+          tag = os.environ.get("RELEASE_TAG", "")
+
+          if tag and tag.removeprefix("v") != str(version):
+              raise SystemExit(
+                  f"Release tag {tag!r} does not match version {version!r}"
+              )
+
+          if project["project"]["requires-python"] != ">=3.9":
+              raise SystemExit(
+                  "Set project.requires-python to >=3.9 in pyproject.toml"
+              )
+
+          features = member["dependencies"]["pyo3"].get("features", [])
+
+          if "abi3-py39" not in features:
+              raise SystemExit(
+                  "Enable pyo3 abi3-py39 in "
+                  "crates/taunicorn-python/Cargo.toml"
+              )
+
+          print(
+              f"taunicorn {version}: "
+              "Python >=3.9; abi3-py39 verified"
+          )
+          PYCODE
+
+  # ---------------------------------------------------------------------------
+  # Source distribution
+  # ---------------------------------------------------------------------------
+
+  sdist:
+    name: Build source distribution
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: "false"
+
+      - name: Build sdist
+        shell: bash
+        run: |
+          printf 'maturin==%s\n' \
+            "${MATURIN_VERSION#v}" \
+            > /tmp/build-constraints.txt
+
+          uv build \
+            --sdist \
+            --build-constraint /tmp/build-constraints.txt
+
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 1
+
+      - name: Upload source distribution
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Build ABI3 wheels
+  # ---------------------------------------------------------------------------
+
+  wheels:
+    name: ${{ matrix.name }} / cp39-abi3
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            artifact: linux-x86_64
+            manylinux: "2_17"
+
+          - name: Windows x86_64
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+            artifact: windows-x86_64
+            manylinux: "off"
+
+          - name: macOS Intel
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: macos-x86_64
+            manylinux: "off"
+
+          - name: macOS ARM64
+            os: macos-15
+            target: aarch64-apple-darwin
+            artifact: macos-arm64
+            manylinux: "off"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: "false"
+
+      - name: Build ABI3 wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          command: build
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          rust-toolchain: stable
+          args: >-
+            --release
+            --locked
+            --manifest-path crates/taunicorn-python/Cargo.toml
+            --out dist
+
+      - name: Verify wheel and test Python versions
+        shell: bash
+        run: |
+          shopt -s nullglob
+
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" -eq 1
+
+          wheel="$(pwd)/${wheels[0]}"
+
+          case "$(basename "$wheel")" in
+            *cp39-abi3*) ;;
+            *)
+              echo "Expected cp39-abi3 wheel, got $wheel" >&2
+              exit 1
+              ;;
+          esac
+
+          for py in 3.9 3.14; do
+            echo "Testing $wheel on Python $py"
+
+            if [[ "$py" == "3.9" ]]; then
+              pytest_req='pytest>=8.4,<9'
+              asyncio_req='pytest-asyncio==1.2.0'
+            else
+              pytest_req='pytest>=9.1.1,<10'
+              asyncio_req='pytest-asyncio>=1.4,<2'
+            fi
+
+            uv run \
+              --isolated \
+              --no-project \
+              --python "$py" \
+              --with "$wheel" \
+              --with "$pytest_req" \
+              --with "$asyncio_req" \
+              python -m pytest \
+                -q \
+                --override-ini 'python_files=*.py' \
+                python/tests
+          done
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ matrix.artifact }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Publish to PyPI
+  # PEP 740 attestations + OIDC Trusted Publishing
+  # ---------------------------------------------------------------------------
+
+  publish:
+    name: Publish to PyPI
+    if: github.event_name == 'release'
+    needs:
+      - sdist
+      - wheels
+
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    environment:
+      name: pypi
+
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: "false"
+
+      - name: Download distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify release distributions
+        shell: bash
+        run: |
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 4
+
+          for wheel in dist/*.whl; do
+            case "$(basename "$wheel")" in
+              *cp39-abi3*) ;;
+              *)
+                echo "Non-cp39-abi3 wheel: $wheel" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          ls -la dist
+
+      - name: Generate PEP 740 attestations
+        uses: astral-sh/attest-action@f589a42a7efb6fe400b4f400de60b4bc90390027 # v0.0.6
+        with:
+          paths: dist/*
+
+      - name: Publish to PyPI
+        shell: bash
+        run: |
+          uv publish \
+            --trusted-publishing always \
+            dist/*
