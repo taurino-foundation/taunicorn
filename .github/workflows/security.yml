@@ -2,90 +2,52 @@ name: Security
 
 on:
   pull_request:
-    paths:
-      - "crates/**/Cargo.toml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/security.yml"
-
+    paths: ["crates/**/Cargo.toml", "Cargo.toml", "Cargo.lock", "pyproject.toml", "uv.lock", ".github/workflows/security.yml"]
   push:
     branches: [main]
-    paths:
-      - "crates/**/Cargo.toml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/security.yml"
-
+    paths: ["crates/**/Cargo.toml", "Cargo.toml", "Cargo.lock", "pyproject.toml", "uv.lock", ".github/workflows/security.yml"]
   schedule:
     - cron: "17 3 * * 1"
-
   workflow_dispatch:
 
 permissions:
   contents: read
 
-env:
-  UV_VERSION: "0.11.18"
-  CARGO_AUDIT_VERSION: "0.22.2"
-  PIP_AUDIT_VERSION: "2.10.1"
-
 jobs:
   rustsec:
     name: RustSec
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: Install Rust stable
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-audit
-        run: |
-          cargo install cargo-audit \
-            --version "${CARGO_AUDIT_VERSION}" \
-            --locked
-
-      - name: Audit workspace lockfile
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit workspace Cargo.lock
         run: cargo audit
 
   python:
-    name: Python dependencies
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    name: Python dependencies / Python 3.9
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: "false"
-
-      - name: Export runtime dependencies
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+      - name: Export runtime dependencies from uv.lock
+        shell: bash
         run: |
-          uv export \
-            --no-dev \
-            --no-emit-project \
-            --format requirements-txt \
-            --output-file /tmp/requirements.txt
-
-      - name: Audit runtime dependencies
+          uv export --locked --no-dev --no-emit-project --no-hashes \
+            --format requirements-txt --output-file requirements-audit.txt
+      - name: Audit dependencies
+        shell: bash
         run: |
-          uvx --from "pip-audit==${PIP_AUDIT_VERSION}" \
-            pip-audit \
-            --requirement /tmp/requirements.txt
+          uvx --from 'pip-audit==2.10.1' pip-audit \
+            --requirement requirements-audit.txt

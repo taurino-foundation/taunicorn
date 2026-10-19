@@ -1,13 +1,27 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# =============================================================================
+# Build System
+# =============================================================================
+
 [build-system]
 requires = ["maturin>=1.14.1,<2.0"]
 build-backend = "maturin"
 
 
+# =============================================================================
+# Project Metadata
+# =============================================================================
+
 [project]
 name = "taunicorn"
 dynamic = ["version"]
+
 description = "Async local IPC byte-stream transport for Rust and Python."
 readme = "README.md"
+
+requires-python = ">=3.9"
+
 license = "MIT OR Apache-2.0"
 license-files = [
     "LICENSE-MIT",
@@ -15,20 +29,24 @@ license-files = [
     "LICENSE.spdx",
 ]
 
-requires-python = ">=3.10"
-
 classifiers = [
     "Development Status :: 3 - Alpha",
+
     "Intended Audience :: Developers",
+
     "Operating System :: OS Independent",
+
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
+
     "Programming Language :: Rust",
+
     "Topic :: Software Development :: Libraries",
     "Typing :: Typed",
 ]
@@ -38,20 +56,79 @@ dependencies = [
 ]
 
 
+# =============================================================================
+# Project URLs
+# =============================================================================
+
 [project.urls]
 Repository = "https://github.com/taurino-foundation/taunicorn"
 
 
+# =============================================================================
+# Optional Dependencies
+# =============================================================================
+
 [project.optional-dependencies]
+
 test = [
-    "pytest>=9.1.1,<10",
-    "pytest-asyncio>=1.4.0,<2",
+    "pytest>=8.4,<9; python_version < '3.10'",
+    "pytest>=9.1.1,<10; python_version >= '3.10'",
+
+    "pytest-asyncio==1.2.0; python_version < '3.10'",
+    "pytest-asyncio>=1.4,<2; python_version >= '3.10'",
 ]
 
 
+# =============================================================================
+# Maturin / PyO3
+# =============================================================================
+
 [tool.maturin]
+
 manifest-path = "crates/taunicorn-python/Cargo.toml"
+
 bindings = "pyo3"
+
 python-source = "python"
+
 module-name = "taunicorn._taunicorn"
+
 strip = true
+
+
+# =============================================================================
+# Pytest
+# =============================================================================
+
+[tool.pytest.ini_options]
+
+minversion = "8.4"
+
+testpaths = [
+    "python/tests",
+]
+
+python_files = [
+    "*.py",
+]
+
+python_functions = [
+    "test_*",
+]
+
+python_classes = [
+    "Test*",
+]
+
+addopts = [
+    "-ra",
+    "--strict-config",
+    "--strict-markers",
+]
+
+xfail_strict = true
+
+asyncio_mode = "auto"
+
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
