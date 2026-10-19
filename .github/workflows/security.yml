@@ -1,57 +1,102 @@
+
 name: Security
 
 on:
   pull_request:
-    paths: ["crates/**/Cargo.toml", "Cargo.toml", "Cargo.lock", "pyproject.toml", "uv.lock", ".github/workflows/security.yml"]
+    paths:
+      - "crates/**/Cargo.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/security.yml"
+
   push:
-    branches: [main]
-    paths: ["crates/**/Cargo.toml", "Cargo.toml", "Cargo.lock", "pyproject.toml", "uv.lock", ".github/workflows/security.yml"]
+    branches:
+      - main
+    paths:
+      - "crates/**/Cargo.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/security.yml"
+
   schedule:
     - cron: "17 3 * * 1"
+
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # ============================================================
+  # Rust Security Audit
+  # ============================================================
   rustsec:
     name: RustSec
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Install Rust
+
+      - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
       - name: Install cargo-audit
-        run: cargo install cargo-audit --version 0.22.2 --locked
-      - name: Audit workspace Cargo.lock
+        run: |
+          cargo install cargo-audit \
+            --version 0.22.2 \
+            --locked
+
+      - name: Audit Rust dependencies
         run: cargo audit
 
+  # ============================================================
+  # Python Security Audit
+  # ============================================================
   python:
     name: Python dependencies / Python 3.9
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+
+      - name: Install Python 3.9
+        run: uv python install 3.9
+
       - name: Export runtime dependencies
         run: |
           uv export \
+            --python 3.9 \
             --no-dev \
             --no-emit-project \
             --no-hashes \
             --format requirements-txt \
             --output-file /tmp/requirements.txt
-      
-      - name: Audit dependencies
-        shell: bash
+
+      - name: Verify requirements export
         run: |
-          uvx --from 'pip-audit==2.10.1' pip-audit \
-            --requirement requirements-audit.txt
+          test -f /tmp/requirements.txt
+          cat /tmp/requirements.txt
+
+      - name: Audit Python dependencies
+        run: |
+          uvx --python 3.12 \
+            --from "pip-audit==2.10.1" \
+            pip-audit \
+            --requirement /tmp/requirements.txt
