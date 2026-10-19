@@ -41,11 +41,15 @@ jobs:
           persist-credentials: false
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
-      - name: Export runtime dependencies from uv.lock
-        shell: bash
+      - name: Export runtime dependencies
         run: |
-          uv export --locked --no-dev --no-emit-project --no-hashes \
-            --format requirements-txt --output-file requirements-audit.txt
+          uv export \
+            --no-dev \
+            --no-emit-project \
+            --no-hashes \
+            --format requirements-txt \
+            --output-file /tmp/requirements.txt
+      
       - name: Audit dependencies
         shell: bash
         run: |
