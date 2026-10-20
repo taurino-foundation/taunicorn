@@ -9,7 +9,13 @@ name: Publish Python
 on:
   release:
     types: [published]
+
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Version tag to publish (e.g. v0.1.10)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -37,11 +43,37 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.ref }}
 
+
+      - name: Verify release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          git fetch --force origin \
+            "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+
+          expected="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          actual="$(git rev-parse HEAD)"
+
+          if [[ "$expected" != "$actual" ]]; then
+            echo "Checked-out commit does not match release tag" >&2
+            exit 1
+          fi
+
+          echo "Verified release tag: $RELEASE_TAG"
+
+          
       - name: Validate tag, metadata, and ABI3 feature
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           python3 - <<'PYCODE'
           import os
@@ -69,7 +101,7 @@ jobs:
 
           tag = os.environ.get("RELEASE_TAG", "")
 
-          if tag and tag.removeprefix("v") != str(version):
+          if not tag.startswith("v") or tag[1:] != str(version):
               raise SystemExit(
                   f"Release tag {tag!r} does not match version {version!r}"
               )
@@ -108,6 +140,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -179,6 +212,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -261,7 +295,7 @@ jobs:
       ${{
         github.event_name == 'release' ||
         (github.event_name == 'workflow_dispatch' &&
-         startsWith(github.ref, 'refs/tags/v'))
+         startsWith(inputs.release_tag, 'v'))
       }}
     needs:
       - sdist
@@ -319,3 +353,5 @@ jobs:
           uv publish \
             --trusted-publishing always \
             dist/*
+
+
