@@ -41,7 +41,7 @@ jobs:
       - name: Validate tag, metadata, and ABI3 feature
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
           python3 - <<'PYCODE'
           import os
