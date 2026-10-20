@@ -257,7 +257,12 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    if: github.event_name == 'release'
+    if: >-
+      ${{
+        github.event_name == 'release' ||
+        (github.event_name == 'workflow_dispatch' &&
+         startsWith(github.ref, 'refs/tags/v'))
+      }}
     needs:
       - sdist
       - wheels
