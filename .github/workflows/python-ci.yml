@@ -46,12 +46,12 @@ jobs:
           - { target: x86_64-apple-darwin, os: macos-15-intel }
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
           architecture: x64
@@ -62,7 +62,7 @@ jobs:
           targets: ${{ matrix.platform.target }}
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: false
 
@@ -107,7 +107,7 @@ jobs:
               --override-ini 'python_files=*.py' python/tests
 
       - name: Upload tested wheel
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.platform.target }}-py${{ matrix.python }}
           path: dist/*.whl
@@ -120,13 +120,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Set up uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
       - name: Build source distribution
         run: uv build --sdist
       - name: Test source distribution on minimum Python
@@ -141,7 +141,7 @@ jobs:
             python -m pytest -v -ra \
               --override-ini 'python_files=*.py' python/tests
       - name: Upload source distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: taunicorn-source
           path: dist/*.tar.gz
