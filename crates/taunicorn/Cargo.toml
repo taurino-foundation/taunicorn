@@ -26,11 +26,11 @@ interprocess = {version = "2.2.3",default-features = false,features = ["tokio"]}
 tokio = {version = "1.48.0",default-features = false,features = ["io-util","sync","time","macros"]}
 tokio-util = {version = "0.7.17",default-features = false}
 futures-util = "0.3.34"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 ed25519-dalek = "3.0"
 getrandom = "0.4"
-hkdf = "0.12"
-sha2 = "0.10"
+hkdf = "0.13"
+sha2 = "0.11"
 x25519-dalek = { version = "3.0", features = ["getrandom"] }
 dotenvy = "0.15.7"
 serde = { version = "1.0.228", features = ["derive"] }
