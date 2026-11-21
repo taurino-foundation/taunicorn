@@ -1,16 +1,11 @@
-/target
-
-# Byte-compiled / optimized / DLL files
+# Python: Byte-compiled / optimized files
 __pycache__/
-.pytest_cache/
-*.py[cod]
-
-# C extensions
+.py[cod]
 *.so
 
-# Distribution / packaging
-.Python
+# Python: Environments and packaging
 .venv/
+venv/
 env/
 bin/
 build/
@@ -24,49 +19,125 @@ sdist/
 var/
 include/
 man/
-venv/
+.Python
+*.egg
 *.egg-info/
 .installed.cfg
-*.egg
 
-# Installer logs
+# Python: Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
 pip-selfcheck.json
 
-# Unit test / coverage reports
-htmlcov/
+# Python: Tests and coverage
+.pytest_cache/
 .tox/
 .coverage
-.cache
+htmlcov/
 nosetests.xml
 coverage.xml
 
-# Translations
-*.mo
-
-# Mr Developer
+# Python: Other tools
 .mr.developer.cfg
 .project
 .pydevproject
-
-# Rope
 .ropeproject
+.python-version
 
-# Django stuff:
+# Django / translations
 *.log
 *.pot
+*.mo
 
-.DS_Store
-
-# Sphinx documentation
+# Sphinx
 docs/_build/
 
-# PyCharm
+
+# Node.js: Logs and diagnostics
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Node.js: Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Node.js: Dependencies and package managers
+node_modules/
+jspm_packages/
+bower_components/
+.npm/
+.yarn-integrity
+.lock-wscript
+/npm
+*.tgz
+.pnp.*
+
+# Keep selected Yarn files
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# Node.js: Build tools and caches
+lib-cov/
+coverage/
+*.lcov
+.nyc_output/
+.grunt/
+build/Release/
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
+.eslintcache
+.node_repl_history
+.tern-port
+.fusebox/
+.dynamodb/
+
+# Framework build output
+.next/
+.nuxt/
+.vuepress/dist/
+.cache/
+
+# TypeScript
+typings/
+*.tsbuildinfo
+
+# Environment variables
+.env
+.env.test
+
+
+# Rust / Cargo
+/target/
+
+# Keep the root workspace lockfile for reproducible builds.
+
+# Native Node.js and Python extensions / WebAssembly
+*.node
+*.pyd
+*.wasm
+
+
+# IDEs and editors
 .idea/
-
-# VSCode
 .vscode/
+.vscode-test/
 
-# Pyenv
-.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store

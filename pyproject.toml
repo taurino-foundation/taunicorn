@@ -23,37 +23,31 @@ readme = "README.md"
 requires-python = ">=3.9"
 
 license = "MIT OR Apache-2.0"
-license-files = [
-    "LICENSE-MIT",
-    "LICENSE-APACHE-2.0",
-    "LICENSE.spdx",
-]
+license-files = ["LICENSE-MIT", "LICENSE-APACHE-2.0", "LICENSE.spdx"]
 
 classifiers = [
-    "Development Status :: 3 - Alpha",
+  "Development Status :: 3 - Alpha",
 
-    "Intended Audience :: Developers",
+  "Intended Audience :: Developers",
 
-    "Operating System :: OS Independent",
+  "Operating System :: OS Independent",
 
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-    "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Implementation :: CPython",
 
-    "Programming Language :: Rust",
+  "Programming Language :: Rust",
 
-    "Topic :: Software Development :: Libraries",
-    "Typing :: Typed",
+  "Topic :: Software Development :: Libraries",
+  "Typing :: Typed",
 ]
 
-dependencies = [
-    "msgpack>=1.0.0,<2",
-]
+dependencies = ["msgpack>=1.0.0,<2"]
 
 
 # =============================================================================
@@ -71,11 +65,11 @@ Repository = "https://github.com/taurino-foundation/taunicorn"
 [project.optional-dependencies]
 
 test = [
-    "pytest>=8.4,<9; python_version < '3.10'",
-    "pytest>=9.1.1,<10; python_version >= '3.10'",
+  "pytest>=8.4,<9; python_version < '3.10'",
+  "pytest>=9.1.1,<10; python_version >= '3.10'",
 
-    "pytest-asyncio==1.2.0; python_version < '3.10'",
-    "pytest-asyncio>=1.4,<2; python_version >= '3.10'",
+  "pytest-asyncio==1.2.0; python_version < '3.10'",
+  "pytest-asyncio>=1.4,<2; python_version >= '3.10'",
 ]
 
 
@@ -104,27 +98,15 @@ strip = true
 
 minversion = "8.4"
 
-testpaths = [
-    "python/tests",
-]
+testpaths = ["python/tests"]
 
-python_files = [
-    "*.py",
-]
+python_files = ["*.py"]
 
-python_functions = [
-    "test_*",
-]
+python_functions = ["test_*"]
 
-python_classes = [
-    "Test*",
-]
+python_classes = ["Test*"]
 
-addopts = [
-    "-ra",
-    "--strict-config",
-    "--strict-markers",
-]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
 
 xfail_strict = true
 
@@ -132,3 +114,6 @@ asyncio_mode = "auto"
 
 asyncio_default_fixture_loop_scope = "function"
 asyncio_default_test_loop_scope = "function"
+
+[dependency-groups]
+dev = ["maturin>=1.16.0", "pytest>=8.4.2", "pytest-asyncio>=1.2.0", "ruff>=0.17.6"]

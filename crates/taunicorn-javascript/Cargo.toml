@@ -1,0 +1,27 @@
+[package]
+name = "taunicorn-javascript"
+authors = ["AriBermeki <lynweklm@gmail.com>"]
+edition = "2021"
+version = "0.1.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi-derive = "3.6.5"
+taunicorn = { path = "../taunicorn" }
+rmp-serde.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+
+[dependencies.napi]
+version = "3.12.4"
+features = ["napi10", "async", "tokio_sync", "tokio_time", "serde-json"]
+
+[build-dependencies]
+napi-build = "2.4.2"

@@ -41,7 +41,7 @@ async def receive_json(connection: Connection) -> dict:
 
     if size > MAX_MESSAGE_SIZE:
         raise ValueError(
-            f"message too large: {size} bytes " f"(maximum: {MAX_MESSAGE_SIZE})"
+            f"message too large: {size} bytes (maximum: {MAX_MESSAGE_SIZE})"
         )
 
     payload = await read_exact(connection, size)
@@ -181,7 +181,7 @@ async def handle_client(
 ) -> None:
     state.active_clients += 1
 
-    print(f"[+] client connected " f"(active={state.active_clients})")
+    print(f"[+] client connected (active={state.active_clients})")
 
     try:
         while True:
@@ -233,7 +233,7 @@ async def handle_client(
 
         await connection.close()
 
-        print(f"[-] client disconnected " f"(active={state.active_clients})")
+        print(f"[-] client disconnected (active={state.active_clients})")
 
 
 async def serve_forever(

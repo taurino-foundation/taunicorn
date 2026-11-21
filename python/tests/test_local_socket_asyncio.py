@@ -3,15 +3,16 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from taunicorn import Connection, Listener, Server, Stream
+from taunicorn import Client, Connection, Listener, Server, Stream
 
 
 async def _round_trip() -> None:
     assert Listener is Server
     assert Stream is Connection
+    assert Client is Connection
 
     endpoint = f"taunicorn-test-{uuid.uuid4().hex}"
-    server = await Server.start(endpoint)
+    server = await Server.listen(endpoint)
 
     async def server_side() -> None:
         connection = await server.accept_timeout(10.0)
@@ -25,7 +26,7 @@ async def _round_trip() -> None:
 
     task = asyncio.create_task(server_side())
     try:
-        client = await Connection.connect_timeout(endpoint, 10.0)
+        client = await asyncio.wait_for(Client.connect(endpoint), 10.0)
         try:
             await asyncio.wait_for(client.send(b"ping"), 10.0)
             response = await asyncio.wait_for(client.receive(4096), 10.0)

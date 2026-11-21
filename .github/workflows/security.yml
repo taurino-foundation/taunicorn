@@ -1,29 +1,10 @@
-
 name: Security
 
 on:
-  pull_request:
-    paths:
-      - "crates/**/Cargo.toml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/security.yml"
-
-  push:
-    branches:
-      - main
-    paths:
-      - "crates/**/Cargo.toml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/security.yml"
+  workflow_call:
 
   schedule:
-    - cron: "17 3 * * 1"
+    - cron: '17 3 * * 1'
 
   workflow_dispatch:
 
@@ -31,6 +12,23 @@ permissions:
   contents: read
 
 jobs:
+  gitleaks:
+    name: Gitleaks / full history
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify Gitleaks and scan all refs including the checked-out commit
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSLo gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz' | sha256sum --check --strict
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks git --redact=100 --log-opts='--all HEAD --full-history -m' "$GITHUB_WORKSPACE"
+
   # ============================================================
   # Rust Security Audit
   # ============================================================
@@ -41,12 +39,9 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
         run: |
@@ -67,36 +62,54 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
+          version: '0.13.0'
           enable-cache: false
-
-      - name: Install Python 3.9
-        run: uv python install 3.9
 
       - name: Export runtime dependencies
         run: |
           uv export \
-            --python 3.9 \
+            --locked --python 3.9.25 \
             --no-dev \
             --no-emit-project \
-            --no-hashes \
             --format requirements-txt \
-            --output-file /tmp/requirements.txt
-
-      - name: Verify requirements export
-        run: |
-          test -f /tmp/requirements.txt
-          cat /tmp/requirements.txt
+            --output-file "$RUNNER_TEMP/requirements.txt" > /dev/null
 
       - name: Audit Python dependencies
         run: |
-          uvx --python 3.12 \
+          uvx --python 3.12.15 \
             --from "pip-audit==2.10.1" \
             pip-audit \
-            --requirement /tmp/requirements.txt
+            --require-hashes --disable-pip --requirement "$RUNNER_TEMP/requirements.txt"
+
+  npm:
+    name: JavaScript dependencies / Node 26
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.1'
+          package-manager-cache: false
+
+      - name: Install locked dependencies
+        run: node .yarn/releases/yarn-4.18.1.cjs install --immutable --mode=skip-build
+
+      - name: Audit direct and transitive dependencies
+        run: node .yarn/releases/yarn-4.18.1.cjs npm audit --all --recursive
+
+      - name: Test detached release inventory and wheel SBOM checks
+        run: python3 -B scripts/ci/test_release_sbom.py

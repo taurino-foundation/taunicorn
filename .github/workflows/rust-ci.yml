@@ -1,23 +1,15 @@
 name: Rust CI
 
 on:
-  pull_request:
-    paths: ["crates/**", "Cargo.toml", "Cargo.lock", "rustfmt.toml", ".github/workflows/rust-ci.yml"]
-  push:
-    branches: [main]
-    paths: ["crates/**", "Cargo.toml", "Cargo.lock", "rustfmt.toml", ".github/workflows/rust-ci.yml"]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: rust-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: "1"
+  RUST_BACKTRACE: '1'
 
 jobs:
   quality:
@@ -26,31 +18,39 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Set up Rust nightly for rustfmt
+        run: rustup toolchain install nightly --profile minimal --component rustfmt
+
       - name: Set up Python 3.9 for PyO3
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.9"
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+          python-version: '3.9.25'
+
       - name: Format
-        run: cargo fmt --all -- --check
-      - name: Check Rust transport crate
-        run: cargo check --manifest-path crates/taunicorn/Cargo.toml --all-targets --locked
-      - name: Check PyO3 crate on Python 3.9
+        run: cargo +nightly fmt --all -- --check
+
+      - name: Check Rust workspace on Python 3.9
         env:
           PYO3_PYTHON: python
-        run: cargo check --manifest-path crates/taunicorn-python/Cargo.toml --all-targets --locked
-      - name: Clippy Rust transport crate
-        run: cargo clippy --manifest-path crates/taunicorn/Cargo.toml --all-targets --locked -- -D warnings
-      - name: Clippy PyO3 crate
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Test Rust workspace
         env:
           PYO3_PYTHON: python
-        run: cargo clippy --manifest-path crates/taunicorn-python/Cargo.toml --all-targets --locked -- -D warnings
+        run: |
+          umask 077
+          XDG_RUNTIME_DIR=$(mktemp -d "$HOME/.taunicorn-ci.XXXXXXXX")
+          export XDG_RUNTIME_DIR
+          cargo test --workspace --all-targets --locked
+
+      - name: Clippy Rust workspace
+        env:
+          PYO3_PYTHON: python
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   transport-tests:
     name: Transport tests / ${{ matrix.name }}
@@ -66,10 +66,17 @@ jobs:
           - { name: macOS ARM64, os: macos-15 }
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+
       - name: Test Rust transport crate
-        run: cargo test --manifest-path crates/taunicorn/Cargo.toml --all-targets --locked
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" != Windows ]]; then
+            umask 077
+            XDG_RUNTIME_DIR=$(mktemp -d "$HOME/.taunicorn-ci.XXXXXXXX")
+            export XDG_RUNTIME_DIR
+          fi
+          cargo test -p taunicorn --all-targets --locked
+          cargo test -p taunicorn --all-targets --locked --features compliance-profile

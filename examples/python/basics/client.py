@@ -125,7 +125,8 @@ def parse_command(line: str) -> dict | None:
 
 
 def print_help() -> None:
-    print("""
+    print(
+        """
 Commands:
 
   ping
@@ -153,7 +154,8 @@ Examples:
   add 10 20 3.5
   sleep 2
   stats
-""".strip())
+""".strip()
+    )
 
 
 async def main() -> None:

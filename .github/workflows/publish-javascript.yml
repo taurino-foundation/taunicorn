@@ -1,0 +1,199 @@
+name: Publish JavaScript
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish verified tarballs to npm
+        type: boolean
+        default: false
+        required: true
+      version:
+        description: Exact npm version (required for production)
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  quality:
+    uses: ./.github/workflows/quality.yml
+
+  build:
+    name: Pack ${{ matrix.platform.abi }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: &platforms
+          - { host: macos-15-intel, abi: darwin-x64, target: x86_64-apple-darwin }
+          - { host: macos-15, abi: darwin-arm64, target: aarch64-apple-darwin }
+          - { host: windows-2025, abi: win32-x64-msvc, target: x86_64-pc-windows-msvc }
+          - { host: ubuntu-24.04, abi: linux-x64-gnu, target: x86_64-unknown-linux-gnu }
+    env:
+      ABI: ${{ matrix.platform.abi }}
+      TARGET: ${{ matrix.platform.target }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.platform.abi == 'darwin-arm64' && '11.0' || '10.13' }}
+    steps:
+      - &checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - &node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+          package-manager-cache: false
+      - &install
+        run: node .yarn/releases/yarn-4.18.1.cjs install --immutable
+      - name: Build one release binding
+        run: |
+          flags=()
+          if [[ $ABI == linux-x64-gnu ]]; then flags+=(--use-napi-cross); fi
+          node .yarn/releases/yarn-4.18.1.cjs napi build --platform --release --target "$TARGET" --package taunicorn-javascript --output-dir build-js --js index.cjs "${flags[@]}" -- --locked
+      - run: python scripts/ci/js_pack.py "$ABI" build-js "dist/js-$ABI"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - run: python scripts/ci/release_sbom.py sboms "dist/js-$ABI/"*.tgz --target "$TARGET"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: js-${{ matrix.platform.abi }}
+          path: dist/js-${{ matrix.platform.abi }}/
+          if-no-files-found: error
+      - if: runner.os == 'Linux'
+        run: python scripts/ci/js_pack.py root build-js dist/js-root
+      - if: runner.os == 'Linux'
+        run: python scripts/ci/release_sbom.py sboms dist/js-root/*.tgz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-npm-${{ matrix.platform.abi }}-${{ github.run_attempt }}
+          path: sboms/*.cdx.json
+          if-no-files-found: error
+          retention-days: 90
+      - if: runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: js-root
+          path: dist/js-root/
+          if-no-files-found: error
+
+  development:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    needs: build
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: *platforms
+        node: ['22', '24', '26']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps:
+      - *checkout
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - *install
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: js-${{ matrix.platform.abi }}
+          path: native
+      - name: Test against the packed binary
+        run: |
+          python scripts/ci/artifacts.py verify native
+          tar -xOzf native/*.tgz "package/taunicorn.$ABI.node" > "javascript/taunicorn/taunicorn.$ABI.node"
+          node .yarn/releases/yarn-4.18.1.cjs test
+      - name: Format, lint and types
+        if: runner.os == 'Linux' && matrix.node == '26'
+        run: |
+          yarn=(node .yarn/releases/yarn-4.18.1.cjs)
+          "${yarn[@]}" exec oxfmt --check __test__ benchmark examples/javascript scripts/ci/js_smoke.mjs package.json tsconfig.json
+          "${yarn[@]}" lint
+          "${yarn[@]}" tsc --noEmit -p __test__/tsconfig.json
+          "${yarn[@]}" tsc --noEmit -p benchmark/tsconfig.json
+
+  stage:
+    needs: [quality, development]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: staging
+    name: Stage / ${{ matrix.platform.abi }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: *platforms
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps:
+      - *checkout
+      - *node
+      - &download
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: js-*
+          path: dist
+      - if: runner.os != 'Linux'
+        run: python scripts/ci/js_stage.py dist "$ABI"
+      - if: runner.os == 'Linux'
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: '0.13.0'
+          enable-cache: false
+      - name: Test installed wheel against installed tarballs
+        if: runner.os == 'Linux'
+        run: |
+          uv build --wheel --out-dir "$RUNNER_TEMP/wheels"
+          uv venv --no-project --python 3.12 "$RUNNER_TEMP/peer"
+          uv pip install --python "$RUNNER_TEMP/peer/bin/python" "$RUNNER_TEMP"/wheels/*.whl
+          python scripts/ci/js_stage.py dist "$ABI" "$RUNNER_TEMP/peer/bin/python"
+
+  publish:
+    needs: stage
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+      inputs.publish == true && inputs.version != '' && vars.PRODUCTION_DELIVERY_ENABLED == 'true'
+    environment: npm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: publish-npm-taunicorn
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - *checkout
+      - *node
+      - *download
+      - name: Verify all five tarballs before publishing any
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ $VERSION == "$(node -p "require('./package.json').version")" ]]
+          packages=()
+          for abi in darwin-arm64 darwin-x64 linux-x64-gnu win32-x64-msvc root; do
+            dir="dist/js-$abi"
+            python scripts/ci/artifacts.py verify "$dir"
+            name="taunicorn-$abi"
+            if [[ $abi == root ]]; then name=taunicorn; fi
+            tgz="$dir/$name-$VERSION.tgz"
+            test -f "$tgz"
+            packages+=("$tgz")
+          done
+          tag=latest
+          if [[ $VERSION == *-* ]]; then tag=next; fi
+          for tgz in "${packages[@]}"; do
+            npm publish "./$tgz" --ignore-scripts --provenance --access public --tag "$tag" --registry=https://registry.npmjs.org/
+          done

@@ -1,357 +1,248 @@
-
 # SPDX-License-Identifier: MIT OR Apache-2.0
-#
-# Build and publish ABI3 wheels for CPython 3.9+.
-# WARNING: Published GitHub releases automatically publish to PyPI.
-
 name: Publish Python
 
 on:
-  release:
-    types: [published]
-
+  pull_request:
+    paths:
+      - 'crates/**'
+      - '.cargo/**'
+      - 'Cargo.*'
+      - 'python/**'
+      - 'examples/python/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'scripts/ci/py_*.py'
+      - 'scripts/ci/*sbom*.py'
+      - 'scripts/ci/artifacts.py'
+      - '.github/workflows/*python*.yml'
+      - '.github/workflows/quality.yml'
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
+      staging_run_id:
+        description: Successful Publish Python push run for this main commit
+        required: true
+        type: string
       release_tag:
-        description: "Version tag to publish (e.g. v0.1.10)"
+        description: Existing version tag on this main commit (e.g. v0.1.11)
         required: true
         type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: pypi-${{ github.ref }}
-  cancel-in-progress: false
-
 env:
-  UV_VERSION: "0.11.18"
-  MATURIN_VERSION: "v1.14.1"
+  RUST_VERSION: '1.99.1'
+  MATURIN_VERSION: '1.14.1'
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Validate version and ABI3 compatibility
-  # ---------------------------------------------------------------------------
+  quality:
+    uses: ./.github/workflows/quality.yml
 
   validate:
-    name: Validate version and ABI
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
-
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
     steps:
-      - name: Checkout
+      - &checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ inputs.release_tag || github.ref }}
-
-
-      - name: Verify release tag
-        shell: bash
+      - id: metadata
         env:
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid release tag: $RELEASE_TAG" >&2
-            exit 1
-          fi
+          python3 - <<'PY'
+          import os, re, tomllib
+          from pathlib import Path
+          def manifest(path):
+              return tomllib.loads(Path(path).read_text())
+          crate = manifest('crates/taunicorn-python/Cargo.toml')
+          version = crate['package']['version']
+          if version == {'workspace': True}:
+              version = manifest('Cargo.toml')['workspace']['package']['version']
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version), version
+          assert manifest('pyproject.toml')['project']['requires-python'] == '>=3.9'
+          assert 'abi3-py39' in crate['dependencies']['pyo3']['features']
+          if os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch':
+              assert os.environ['GITHUB_REF'] == 'refs/heads/main'
+              assert os.environ['RELEASE_TAG'] == 'v' + version, 'tag/version mismatch'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print(f'version={version}', file=output)
+          PY
 
-          git fetch --force origin \
-            "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-
-          expected="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
-          actual="$(git rev-parse HEAD)"
-
-          if [[ "$expected" != "$actual" ]]; then
-            echo "Checked-out commit does not match release tag" >&2
-            exit 1
-          fi
-
-          echo "Verified release tag: $RELEASE_TAG"
-
-          
-      - name: Validate tag, metadata, and ABI3 feature
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
-        run: |
-          python3 - <<'PYCODE'
-          import os
-          import pathlib
-          import tomllib
-
-          root = tomllib.loads(
-              pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
-          )
-
-          member = tomllib.loads(
-              pathlib.Path(
-                  "crates/taunicorn-python/Cargo.toml"
-              ).read_text(encoding="utf-8")
-          )
-
-          project = tomllib.loads(
-              pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
-          )
-
-          version = member["package"]["version"]
-
-          if isinstance(version, dict) and version.get("workspace"):
-              version = root["workspace"]["package"]["version"]
-
-          tag = os.environ.get("RELEASE_TAG", "")
-
-          if not tag.startswith("v") or tag[1:] != str(version):
-              raise SystemExit(
-                  f"Release tag {tag!r} does not match version {version!r}"
-              )
-
-          if project["project"]["requires-python"] != ">=3.9":
-              raise SystemExit(
-                  "Set project.requires-python to >=3.9 in pyproject.toml"
-              )
-
-          features = member["dependencies"]["pyo3"].get("features", [])
-
-          if "abi3-py39" not in features:
-              raise SystemExit(
-                  "Enable pyo3 abi3-py39 in "
-                  "crates/taunicorn-python/Cargo.toml"
-              )
-
-          print(
-              f"taunicorn {version}: "
-              "Python >=3.9; abi3-py39 verified"
-          )
-          PYCODE
-
-  # ---------------------------------------------------------------------------
-  # Source distribution
-  # ---------------------------------------------------------------------------
-
-  sdist:
-    name: Build source distribution
+  build:
+    if: github.event_name != 'workflow_dispatch'
     needs: validate
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ inputs.release_tag || github.ref }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: "false"
-
-      - name: Build sdist
-        shell: bash
-        run: |
-          printf 'maturin==%s\n' \
-            "${MATURIN_VERSION#v}" \
-            > /tmp/build-constraints.txt
-
-          uv build \
-            --sdist \
-            --build-constraint /tmp/build-constraints.txt
-
-          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 1
-
-      - name: Upload source distribution
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dist-sdist
-          path: dist/*.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-
-  # ---------------------------------------------------------------------------
-  # Build ABI3 wheels
-  # ---------------------------------------------------------------------------
-
-  wheels:
-    name: ${{ matrix.name }} / cp39-abi3
-    needs: validate
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-
-    strategy:
+    strategy: &targets
       fail-fast: false
       matrix:
         include:
-          - name: Linux x86_64
-            os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            artifact: linux-x86_64
-            manylinux: "2_17"
-
-          - name: Windows x86_64
-            os: windows-2025
-            target: x86_64-pc-windows-msvc
-            artifact: windows-x86_64
-            manylinux: "off"
-
-          - name: macOS Intel
-            os: macos-15-intel
-            target: x86_64-apple-darwin
-            artifact: macos-x86_64
-            manylinux: "off"
-
-          - name: macOS ARM64
-            os: macos-15
-            target: aarch64-apple-darwin
-            artifact: macos-arm64
-            manylinux: "off"
-
+          - { id: linux-x86_64, os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, manylinux: '2_17' }
+          - { id: windows-x86_64, os: windows-2025, target: x86_64-pc-windows-msvc, manylinux: 'off' }
+          - { id: macos-x86_64, os: macos-15-intel, target: x86_64-apple-darwin, manylinux: 'off' }
+          - { id: macos-arm64, os: macos-15, target: aarch64-apple-darwin, manylinux: 'off' }
+          - { id: sdist, os: ubuntu-24.04 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ inputs.release_tag || github.ref }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: "false"
-
-      - name: Build ABI3 wheel
+      - *checkout
+      - if: matrix.id != 'sdist'
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
-          maturin-version: ${{ env.MATURIN_VERSION }}
-          command: build
+          maturin-version: v${{ env.MATURIN_VERSION }}
+          rust-toolchain: ${{ env.RUST_VERSION }}
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
-          rust-toolchain: stable
-          args: >-
-            --release
-            --locked
-            --manifest-path crates/taunicorn-python/Cargo.toml
-            --out dist
-
-      - name: Verify wheel and test Python versions
-        shell: bash
-        run: |
-          shopt -s nullglob
-
-          wheels=(dist/*.whl)
-          test "${#wheels[@]}" -eq 1
-
-          wheel="$(pwd)/${wheels[0]}"
-
-          case "$(basename "$wheel")" in
-            *cp39-abi3*) ;;
-            *)
-              echo "Expected cp39-abi3 wheel, got $wheel" >&2
-              exit 1
-              ;;
-          esac
-
-          for py in 3.9 3.14; do
-            echo "Testing $wheel on Python $py"
-
-            if [[ "$py" == "3.9" ]]; then
-              pytest_req='pytest>=8.4,<9'
-              asyncio_req='pytest-asyncio==1.2.0'
-            else
-              pytest_req='pytest>=9.1.1,<10'
-              asyncio_req='pytest-asyncio>=1.4,<2'
-            fi
-
-            uv run \
-              --isolated \
-              --no-project \
-              --python "$py" \
-              --with "$wheel" \
-              --with "$pytest_req" \
-              --with "$asyncio_req" \
-              python -m pytest \
-                -q \
-                --override-ini 'python_files=*.py' \
-                python/tests
-          done
-
-      - name: Upload wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          command: build
+          args: --release --locked --manifest-path crates/taunicorn-python/Cargo.toml --out dist
+      - &uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          name: dist-${{ matrix.artifact }}
-          path: dist/*.whl
+          version: '0.11.18'
+          enable-cache: false
+      - if: matrix.id == 'sdist'
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          RUSTUP_TOOLCHAIN="$RUST_VERSION" uvx --from "maturin==$MATURIN_VERSION" maturin sdist --manifest-path crates/taunicorn-python/Cargo.toml --out dist
+      - run: python scripts/ci/artifacts.py seal dist
+      - name: Inventory the sealed distribution
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [[ -n "$TARGET" ]]; then
+            uv run --no-project --python 3.12 python scripts/ci/release_sbom.py sboms dist/*.whl --target "$TARGET"
+          else
+            uv run --no-project --python 3.12 python scripts/ci/release_sbom.py sboms dist/*.tar.gz
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-python-${{ matrix.id }}-${{ github.run_attempt }}
+          path: sboms/*.cdx.json
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: py-${{ needs.validate.outputs.version }}-${{ matrix.id }}-${{ github.run_attempt }}
+          path: dist/
           if-no-files-found: error
           retention-days: 7
 
-  # ---------------------------------------------------------------------------
-  # Publish to PyPI
-  # PEP 740 attestations + OIDC Trusted Publishing
-  # ---------------------------------------------------------------------------
+  pr-test:
+    if: github.event_name == 'pull_request'
+    needs: [validate, build, quality]
+    runs-on: ${{ matrix.os }}
+    strategy: *targets
+    timeout-minutes: 60
+    steps: &install-tests
+      - *checkout
+      - *uv
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: py-${{ needs.validate.outputs.version }}-${{ matrix.id }}-${{ github.run_attempt }}
+          path: dist
+      - run: python scripts/ci/artifacts.py verify dist
+      - name: Install and test downloaded distribution
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          PY_ROLLBACK_DRILL: ${{ matrix.id == 'linux-x86_64' && '1' || '0' }}
+        run: |
+          if [[ '${{ matrix.id }}' == sdist ]]; then
+            rustup toolchain install "$RUST_VERSION" --profile minimal
+            export RUSTUP_TOOLCHAIN="$RUST_VERSION"
+            export UV_BUILD_CONSTRAINT="$RUNNER_TEMP/maturin.txt"
+            printf 'maturin==%s\n' "$MATURIN_VERSION" > "$UV_BUILD_CONSTRAINT"
+          fi
+          python scripts/ci/py_test_dist.py dist "$VERSION"
+
+  staging:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [validate, build, quality]
+    environment: staging
+    runs-on: ${{ matrix.os }}
+    strategy: *targets
+    timeout-minutes: 60
+    steps: *install-tests
+
+  authorize:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && vars.PRODUCTION_DELIVERY_ENABLED == 'true'
+    needs: [validate, quality]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    outputs:
+      attempt: ${{ steps.check.outputs.attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_RUN: ${{ inputs.staging_run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$STAGING_RUN" =~ ^[1-9][0-9]*$ ]]
+          api="repos/$GITHUB_REPOSITORY"
+          test "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" = "$GITHUB_SHA"
+          run=$(gh api "$api/actions/runs/$STAGING_RUN")
+          jq -e --arg sha "$GITHUB_SHA" --arg repo "$GITHUB_REPOSITORY" '
+            .path == ".github/workflows/publish-python.yml" and .event == "push" and
+            .head_repository.full_name == $repo and .head_branch == "main" and
+            .head_sha == $sha and .conclusion == "success"' <<<"$run"
+          gh api "$api/environments/pypi" | jq -e '
+            any(.protection_rules[]; .type == "required_reviewers" and (.reviewers | length > 0))'
+          echo "attempt=$(jq -r .run_attempt <<<"$run")" >> "$GITHUB_OUTPUT"
 
   publish:
-    name: Publish to PyPI
-    if: >-
-      ${{
-        github.event_name == 'release' ||
-        (github.event_name == 'workflow_dispatch' &&
-         startsWith(inputs.release_tag, 'v'))
-      }}
-    needs:
-      - sdist
-      - wheels
-
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && vars.PRODUCTION_DELIVERY_ENABLED == 'true'
+    needs: [validate, authorize, quality]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-
-    environment:
-      name: pypi
-
+    environment: pypi
+    concurrency: python-production
     permissions:
+      contents: read
+      actions: read
       id-token: write
-
     steps:
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - *checkout
+      - *uv
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: "false"
-
-      - name: Download distributions
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: dist-*
-          path: dist
-          merge-multiple: true
-
-      - name: Verify release distributions
-        shell: bash
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.staging_run_id }}
+          pattern: py-${{ needs.validate.outputs.version }}-*-${{ needs.authorize.outputs.attempt }}
+          path: staged
+      - name: Verify all five sealed distributions; exclude manifests from publication
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          ATTEMPT: ${{ needs.authorize.outputs.attempt }}
         run: |
-          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 1
-          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 4
-
-          for wheel in dist/*.whl; do
-            case "$(basename "$wheel")" in
-              *cp39-abi3*) ;;
-              *)
-                echo "Non-cp39-abi3 wheel: $wheel" >&2
-                exit 1
-                ;;
-            esac
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir dist
+          for id in linux-x86_64 windows-x86_64 macos-x86_64 macos-arm64 sdist; do
+            dir="staged/py-$VERSION-$id-$ATTEMPT"
+            python scripts/ci/artifacts.py verify "$dir"
+            if [[ "$id" == sdist ]]; then
+              cp "$dir/taunicorn-$VERSION.tar.gz" dist/
+            else
+              wheels=("$dir/taunicorn-$VERSION-cp39-abi3-"*.whl)
+              test "${#wheels[@]}" -eq 1
+              cp "${wheels[0]}" dist/
+            fi
           done
-
-          ls -la dist
-
+          files=(dist/*); test "${#files[@]}" -eq 5
       - name: Generate PEP 740 attestations
         uses: astral-sh/attest-action@f589a42a7efb6fe400b4f400de60b4bc90390027 # v0.0.6
         with:
           paths: dist/*
-
-      - name: Publish to PyPI
-        shell: bash
-        run: |
-          uv publish \
-            --trusted-publishing always \
-            dist/*
-
-
+      - run: uv publish --trusted-publishing always dist/*
