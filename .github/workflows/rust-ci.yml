@@ -16,6 +16,7 @@ jobs:
     name: Format / Check / Clippy
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -23,7 +24,10 @@ jobs:
           persist-credentials: false
 
       - name: Set up Rust nightly for rustfmt
-        run: rustup toolchain install nightly --profile minimal --component rustfmt
+        run: |
+          rustup toolchain install nightly \
+            --profile minimal \
+            --component rustfmt
 
       - name: Set up Python 3.9 for PyO3
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -41,42 +45,135 @@ jobs:
       - name: Test Rust workspace
         env:
           PYO3_PYTHON: python
+        shell: bash
         run: |
+          set -euo pipefail
+
           umask 077
+
           XDG_RUNTIME_DIR=$(mktemp -d "$HOME/.taunicorn-ci.XXXXXXXX")
           export XDG_RUNTIME_DIR
-          cargo test --workspace --all-targets --locked
+
+          trap 'rm -rf -- "$XDG_RUNTIME_DIR"' EXIT
+
+          cargo test \
+            --workspace \
+            --all-targets \
+            --locked
 
       - name: Clippy Rust workspace
         env:
           PYO3_PYTHON: python
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: |
+          cargo clippy \
+            --workspace \
+            --all-targets \
+            --locked \
+            -- -D warnings
 
   transport-tests:
     name: Transport tests / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+
     strategy:
       fail-fast: false
+
       matrix:
         include:
-          - { name: Linux, os: ubuntu-24.04 }
-          - { name: Windows x86_64, os: windows-2025 }
-          - { name: macOS Intel, os: macos-15-intel }
-          - { name: macOS ARM64, os: macos-15 }
+          - name: Linux
+            os: ubuntu-24.04
+
+          - name: Windows x86_64
+            os: windows-2025
+
+          - name: macOS Intel
+            os: macos-15-intel
+
+          - name: macOS ARM64
+            os: macos-15
+
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      - name: Show Rust environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Runner OS: $RUNNER_OS"
+          echo "Runner architecture: $RUNNER_ARCH"
+
+          rustc --version
+          cargo --version
+          rustup show active-toolchain
+
       - name: Test Rust transport crate
         shell: bash
         run: |
+          set -euo pipefail
+
           if [[ "$RUNNER_OS" != Windows ]]; then
             umask 077
+
             XDG_RUNTIME_DIR=$(mktemp -d "$HOME/.taunicorn-ci.XXXXXXXX")
             export XDG_RUNTIME_DIR
+
+            trap 'rm -rf -- "$XDG_RUNTIME_DIR"' EXIT
           fi
-          cargo test -p taunicorn --all-targets --locked
-          cargo test -p taunicorn --all-targets --locked --features compliance-profile
+
+          # macOS-specific ACL and directory diagnostics.
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            echo "========================================"
+            echo "macOS IPC compliance diagnostics"
+            echo "========================================"
+
+            echo "Operating system:"
+            sw_vers
+
+            echo "Current user:"
+            id
+
+            echo "Runtime directory:"
+            echo "$XDG_RUNTIME_DIR"
+
+            echo "Filesystem root:"
+            ls -ldeO /
+
+            echo "Users directory:"
+            ls -ldeO /Users
+
+            echo "Home directory:"
+            ls -ldeO "$HOME"
+
+            echo "Private runtime directory:"
+            ls -ldeO "$XDG_RUNTIME_DIR"
+
+            echo "Runtime directory permissions:"
+            stat -f 'mode=%Sp uid=%u gid=%g' "$XDG_RUNTIME_DIR"
+
+            echo "Extended ACL entries:"
+            ls -le "$XDG_RUNTIME_DIR"
+
+            echo "========================================"
+          fi
+
+          echo "Running default Rust transport tests"
+
+          cargo test \
+            -p taunicorn \
+            --all-targets \
+            --locked \
+            -- --nocapture
+
+          echo "Running compliance-profile transport tests"
+
+          cargo test \
+            -p taunicorn \
+            --all-targets \
+            --locked \
+            --features compliance-profile \
+            -- --nocapture
