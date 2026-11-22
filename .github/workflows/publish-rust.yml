@@ -22,6 +22,7 @@ jobs:
     uses: ./.github/workflows/quality.yml
 
   build:
+    needs: quality
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
@@ -51,7 +52,7 @@ jobs:
           if-no-files-found: error
 
   stage:
-    needs: [quality, build]
+    needs: build
     if: github.ref == 'refs/heads/main'
     environment: staging
     runs-on: ubuntu-24.04

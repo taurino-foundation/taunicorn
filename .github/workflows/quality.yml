@@ -7,12 +7,6 @@ permissions:
   contents: read
 
 jobs:
-  rust:
-    uses: ./.github/workflows/rust-ci.yml
-  python:
-    uses: ./.github/workflows/python-ci.yml
-  security:
-    uses: ./.github/workflows/security.yml
   pipeline:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -32,7 +26,21 @@ jobs:
           tar -xzf actionlint.tgz actionlint
           cd "$GITHUB_WORKSPACE"
           "$RUNNER_TEMP/actionlint" -color
+
+  security:
+    needs: pipeline
+    uses: ./.github/workflows/security.yml
+
+  rust:
+    needs: security
+    uses: ./.github/workflows/rust-ci.yml
+
+  python:
+    needs: rust
+    uses: ./.github/workflows/python-ci.yml
+
   interop:
+    needs: python
     name: Python server / Node client
     runs-on: ubuntu-24.04
     timeout-minutes: 30
