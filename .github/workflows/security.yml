@@ -33,6 +33,7 @@ jobs:
   # Rust Security Audit
   # ============================================================
   rustsec:
+    needs: gitleaks
     name: RustSec
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -56,6 +57,7 @@ jobs:
   # Python Security Audit
   # ============================================================
   python:
+    needs: rustsec
     name: Python dependencies / Python 3.9
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -89,6 +91,7 @@ jobs:
             --require-hashes --disable-pip --requirement "$RUNNER_TEMP/requirements.txt"
 
   npm:
+    needs: python
     name: JavaScript dependencies / Node 26
     runs-on: ubuntu-24.04
     timeout-minutes: 20

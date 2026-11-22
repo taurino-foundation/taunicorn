@@ -66,29 +66,17 @@ jobs:
             --locked \
             -- -D warnings
 
-  transport-tests:
+  transport-linux:
     name: Transport tests / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
 
+    needs: quality
     strategy:
-      fail-fast: false
-
       matrix:
         include:
-          - name: Linux
-            os: ubuntu-24.04
-
-          - name: Windows x86_64
-            os: windows-2025
-
-          - name: macOS Intel
-            os: macos-15-intel
-
-          - name: macOS ARM64
-            os: macos-15
-
-    steps:
+          - { name: Linux, os: ubuntu-24.04 }
+    steps: &transport-steps
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -129,3 +117,39 @@ jobs:
             --locked \
             --features compliance-profile \
             -- --nocapture
+
+  transport-windows:
+    name: Transport tests / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    needs: transport-linux
+    strategy:
+      matrix:
+        include:
+          - { name: Windows x86_64, os: windows-2025 }
+    steps: *transport-steps
+
+  transport-macos-intel:
+    name: Transport tests / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    needs: transport-windows
+    strategy:
+      matrix:
+        include:
+          - { name: macOS Intel, os: macos-15-intel }
+    steps: *transport-steps
+
+  transport-macos-arm64:
+    name: Transport tests / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    needs: transport-macos-intel
+    strategy:
+      matrix:
+        include:
+          - { name: macOS ARM64, os: macos-15 }
+    steps: *transport-steps

@@ -41,6 +41,7 @@ jobs:
     uses: ./.github/workflows/quality.yml
 
   validate:
+    needs: quality
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.metadata.outputs.version }}
@@ -72,21 +73,17 @@ jobs:
               print(f'version={version}', file=output)
           PY
 
-  build:
+  build-linux:
+    name: build (linux-x86_64, ubuntu-24.04, x86_64-unknown-linux-gnu, 2_17)
     if: github.event_name != 'workflow_dispatch'
     needs: validate
-    strategy: &targets
-      fail-fast: false
+    strategy: &linux-target
       matrix:
         include:
           - { id: linux-x86_64, os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, manylinux: '2_17' }
-          - { id: windows-x86_64, os: windows-2025, target: x86_64-pc-windows-msvc, manylinux: 'off' }
-          - { id: macos-x86_64, os: macos-15-intel, target: x86_64-apple-darwin, manylinux: 'off' }
-          - { id: macos-arm64, os: macos-15, target: aarch64-apple-darwin, manylinux: 'off' }
-          - { id: sdist, os: ubuntu-24.04 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    steps:
+    steps: &build-steps
       - *checkout
       - if: matrix.id != 'sdist'
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
@@ -130,11 +127,60 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  pr-test:
-    if: github.event_name == 'pull_request'
-    needs: [validate, build, quality]
+  build-windows:
+    name: build (windows-x86_64, windows-2025, x86_64-pc-windows-msvc, off)
+    if: github.event_name != 'workflow_dispatch'
+    needs: [validate, build-linux]
+    strategy: &windows-target
+      matrix:
+        include:
+          - { id: windows-x86_64, os: windows-2025, target: x86_64-pc-windows-msvc, manylinux: 'off' }
     runs-on: ${{ matrix.os }}
-    strategy: *targets
+    timeout-minutes: 60
+    steps: *build-steps
+
+  build-macos-intel:
+    name: build (macos-x86_64, macos-15-intel, x86_64-apple-darwin, off)
+    if: github.event_name != 'workflow_dispatch'
+    needs: [validate, build-windows]
+    strategy: &macos-intel-target
+      matrix:
+        include:
+          - { id: macos-x86_64, os: macos-15-intel, target: x86_64-apple-darwin, manylinux: 'off' }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps: *build-steps
+
+  build-macos-arm64:
+    name: build (macos-arm64, macos-15, aarch64-apple-darwin, off)
+    if: github.event_name != 'workflow_dispatch'
+    needs: [validate, build-macos-intel]
+    strategy: &macos-arm64-target
+      matrix:
+        include:
+          - { id: macos-arm64, os: macos-15, target: aarch64-apple-darwin, manylinux: 'off' }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps: *build-steps
+
+  build-sdist:
+    name: build (sdist, ubuntu-24.04)
+    if: github.event_name != 'workflow_dispatch'
+    needs: [validate, build-macos-arm64]
+    strategy: &sdist-target
+      matrix:
+        include:
+          - { id: sdist, os: ubuntu-24.04, target: '', manylinux: '' }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps: *build-steps
+
+  pr-test-linux:
+    name: pr-test (linux-x86_64, ubuntu-24.04, x86_64-unknown-linux-gnu, 2_17)
+    if: github.event_name == 'pull_request'
+    needs: [validate, build-sdist]
+    strategy: *linux-target
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps: &install-tests
       - *checkout
@@ -159,18 +205,95 @@ jobs:
           source scripts/ci/private_runtime.sh
           python scripts/ci/py_test_dist.py dist "$VERSION"
 
-  staging:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [validate, build, quality]
-    environment: staging
+  pr-test-windows:
+    name: pr-test (windows-x86_64, windows-2025, x86_64-pc-windows-msvc, off)
+    if: github.event_name == 'pull_request'
+    needs: [validate, pr-test-linux]
+    strategy: *windows-target
     runs-on: ${{ matrix.os }}
-    strategy: *targets
+    timeout-minutes: 60
+    steps: *install-tests
+
+  pr-test-macos-intel:
+    name: pr-test (macos-x86_64, macos-15-intel, x86_64-apple-darwin, off)
+    if: github.event_name == 'pull_request'
+    needs: [validate, pr-test-windows]
+    strategy: *macos-intel-target
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps: *install-tests
+
+  pr-test-macos-arm64:
+    name: pr-test (macos-arm64, macos-15, aarch64-apple-darwin, off)
+    if: github.event_name == 'pull_request'
+    needs: [validate, pr-test-macos-intel]
+    strategy: *macos-arm64-target
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps: *install-tests
+
+  pr-test-sdist:
+    name: pr-test (sdist, ubuntu-24.04)
+    if: github.event_name == 'pull_request'
+    needs: [validate, pr-test-macos-arm64]
+    strategy: *sdist-target
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps: *install-tests
+
+  staging-linux:
+    name: staging (linux-x86_64, ubuntu-24.04, x86_64-unknown-linux-gnu, 2_17)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [validate, build-sdist]
+    environment: staging
+    strategy: *linux-target
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps: *install-tests
+
+  staging-windows:
+    name: staging (windows-x86_64, windows-2025, x86_64-pc-windows-msvc, off)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [validate, staging-linux]
+    environment: staging
+    strategy: *windows-target
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps: *install-tests
+
+  staging-macos-intel:
+    name: staging (macos-x86_64, macos-15-intel, x86_64-apple-darwin, off)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [validate, staging-windows]
+    environment: staging
+    strategy: *macos-intel-target
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps: *install-tests
+
+  staging-macos-arm64:
+    name: staging (macos-arm64, macos-15, aarch64-apple-darwin, off)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [validate, staging-macos-intel]
+    environment: staging
+    strategy: *macos-arm64-target
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps: *install-tests
+
+  staging-sdist:
+    name: staging (sdist, ubuntu-24.04)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [validate, staging-macos-arm64]
+    environment: staging
+    strategy: *sdist-target
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps: *install-tests
 
   authorize:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && vars.PRODUCTION_DELIVERY_ENABLED == 'true'
-    needs: [validate, quality]
+    needs: validate
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -204,7 +327,7 @@ jobs:
 
   publish:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && vars.PRODUCTION_DELIVERY_ENABLED == 'true'
-    needs: [validate, authorize, quality]
+    needs: [validate, authorize]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: pypi

@@ -26,23 +26,20 @@ jobs:
   quality:
     uses: ./.github/workflows/quality.yml
 
-  build:
+  build-linux:
     name: Pack ${{ matrix.platform.abi }}
     runs-on: ${{ matrix.platform.host }}
     timeout-minutes: 45
+    needs: quality
     strategy:
-      fail-fast: false
       matrix:
-        platform: &platforms
-          - { host: macos-15-intel, abi: darwin-x64, target: x86_64-apple-darwin }
-          - { host: macos-15, abi: darwin-arm64, target: aarch64-apple-darwin }
-          - { host: windows-2025, abi: win32-x64-msvc, target: x86_64-pc-windows-msvc }
-          - { host: ubuntu-24.04, abi: linux-x64-gnu, target: x86_64-unknown-linux-gnu }
+        platform:
+          - &linux-target { host: ubuntu-24.04, abi: linux-x64-gnu, target: x86_64-unknown-linux-gnu }
     env:
       ABI: ${{ matrix.platform.abi }}
       TARGET: ${{ matrix.platform.target }}
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.platform.abi == 'darwin-arm64' && '11.0' || '10.13' }}
-    steps:
+    steps: &build-steps
       - &checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -86,19 +83,64 @@ jobs:
           path: dist/js-root/
           if-no-files-found: error
 
-  development:
-    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
-    needs: build
+  build-windows:
+    name: Pack ${{ matrix.platform.abi }}
     runs-on: ${{ matrix.platform.host }}
-    timeout-minutes: 15
+    timeout-minutes: 45
+    needs: build-linux
     strategy:
-      fail-fast: false
       matrix:
-        platform: *platforms
-        node: ['22', '24', '26']
+        platform:
+          - &windows-target { host: windows-2025, abi: win32-x64-msvc, target: x86_64-pc-windows-msvc }
     env:
       ABI: ${{ matrix.platform.abi }}
-    steps:
+      TARGET: ${{ matrix.platform.target }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.platform.abi == 'darwin-arm64' && '11.0' || '10.13' }}
+    steps: *build-steps
+
+  build-macos-intel:
+    name: Pack ${{ matrix.platform.abi }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 45
+    needs: build-windows
+    strategy:
+      matrix:
+        platform:
+          - &macos-intel-target { host: macos-15-intel, abi: darwin-x64, target: x86_64-apple-darwin }
+    env:
+      ABI: ${{ matrix.platform.abi }}
+      TARGET: ${{ matrix.platform.target }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.platform.abi == 'darwin-arm64' && '11.0' || '10.13' }}
+    steps: *build-steps
+
+  build-macos-arm64:
+    name: Pack ${{ matrix.platform.abi }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 45
+    needs: build-macos-intel
+    strategy:
+      matrix:
+        platform:
+          - &macos-arm64-target { host: macos-15, abi: darwin-arm64, target: aarch64-apple-darwin }
+    env:
+      ABI: ${{ matrix.platform.abi }}
+      TARGET: ${{ matrix.platform.target }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.platform.abi == 'darwin-arm64' && '11.0' || '10.13' }}
+    steps: *build-steps
+
+  ava-linux-26:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    needs: build-macos-arm64
+    strategy:
+      matrix:
+        platform:
+          - *linux-target
+        node: ['26']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: &ava-steps
       - *checkout
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -124,20 +166,174 @@ jobs:
           "${yarn[@]}" tsc --noEmit -p __test__/tsconfig.json
           "${yarn[@]}" tsc --noEmit -p benchmark/tsconfig.json
 
-  stage:
-    needs: [quality, development]
+  ava-linux-24:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    needs: ava-linux-26
+    strategy:
+      matrix:
+        platform:
+          - *linux-target
+        node: ['24']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *ava-steps
+
+  ava-linux-22:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    needs: ava-linux-24
+    strategy:
+      matrix:
+        platform:
+          - *linux-target
+        node: ['22']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *ava-steps
+
+  ava-windows-26:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    needs: ava-linux-22
+    strategy:
+      matrix:
+        platform:
+          - *windows-target
+        node: ['26']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *ava-steps
+
+  ava-windows-24:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    needs: ava-windows-26
+    strategy:
+      matrix:
+        platform:
+          - *windows-target
+        node: ['24']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *ava-steps
+
+  ava-windows-22:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    needs: ava-windows-24
+    strategy:
+      matrix:
+        platform:
+          - *windows-target
+        node: ['22']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *ava-steps
+
+  ava-macos-intel-26:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    needs: ava-windows-22
+    strategy:
+      matrix:
+        platform:
+          - *macos-intel-target
+        node: ['26']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *ava-steps
+
+  ava-macos-intel-24:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    needs: ava-macos-intel-26
+    strategy:
+      matrix:
+        platform:
+          - *macos-intel-target
+        node: ['24']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *ava-steps
+
+  ava-macos-intel-22:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    needs: ava-macos-intel-24
+    strategy:
+      matrix:
+        platform:
+          - *macos-intel-target
+        node: ['22']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *ava-steps
+
+  ava-macos-arm64-26:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    needs: ava-macos-intel-22
+    strategy:
+      matrix:
+        platform:
+          - *macos-arm64-target
+        node: ['26']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *ava-steps
+
+  ava-macos-arm64-24:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    needs: ava-macos-arm64-26
+    strategy:
+      matrix:
+        platform:
+          - *macos-arm64-target
+        node: ['24']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *ava-steps
+
+  ava-macos-arm64-22:
+    name: AVA / ${{ matrix.platform.abi }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 15
+    needs: ava-macos-arm64-24
+    strategy:
+      matrix:
+        platform:
+          - *macos-arm64-target
+        node: ['22']
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *ava-steps
+
+  stage-linux:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     environment: staging
     name: Stage / ${{ matrix.platform.abi }}
     runs-on: ${{ matrix.platform.host }}
     timeout-minutes: 30
+    needs: ava-macos-arm64-22
     strategy:
-      fail-fast: false
       matrix:
-        platform: *platforms
+        platform:
+          - *linux-target
     env:
       ABI: ${{ matrix.platform.abi }}
-    steps:
+    steps: &stage-steps
       - *checkout
       - *node
       - &download
@@ -160,8 +356,53 @@ jobs:
           uv pip install --python "$RUNNER_TEMP/peer/bin/python" "$RUNNER_TEMP"/wheels/*.whl
           python scripts/ci/js_stage.py dist "$ABI" "$RUNNER_TEMP/peer/bin/python"
 
+  stage-windows:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: staging
+    name: Stage / ${{ matrix.platform.abi }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 30
+    needs: stage-linux
+    strategy:
+      matrix:
+        platform:
+          - *windows-target
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *stage-steps
+
+  stage-macos-intel:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: staging
+    name: Stage / ${{ matrix.platform.abi }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 30
+    needs: stage-windows
+    strategy:
+      matrix:
+        platform:
+          - *macos-intel-target
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *stage-steps
+
+  stage-macos-arm64:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: staging
+    name: Stage / ${{ matrix.platform.abi }}
+    runs-on: ${{ matrix.platform.host }}
+    timeout-minutes: 30
+    needs: stage-macos-intel
+    strategy:
+      matrix:
+        platform:
+          - *macos-arm64-target
+    env:
+      ABI: ${{ matrix.platform.abi }}
+    steps: *stage-steps
+
   publish:
-    needs: stage
+    needs: stage-macos-arm64
     if: >-
       github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
       inputs.publish == true && inputs.version != '' && vars.PRODUCTION_DELIVERY_ENABLED == 'true'
