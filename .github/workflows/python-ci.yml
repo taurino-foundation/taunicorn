@@ -1,149 +1,27 @@
 name: Python CI
 
 on:
-  pull_request:
-    paths:
-      - "crates/taunicorn-python/**"
-      - "crates/taunicorn/**"
-      - "python/**"
-      - "pyproject.toml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "uv.lock"
-      - ".github/workflows/python-ci.yml"
-  push:
-    branches: [main]
-    paths:
-      - "crates/taunicorn-python/**"
-      - "crates/taunicorn/**"
-      - "python/**"
-      - "pyproject.toml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "uv.lock"
-      - ".github/workflows/python-ci.yml"
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: python-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  wheels-and-tests:
-    name: ${{ matrix.platform.target }} / Python ${{ matrix.python }}
-    runs-on: ${{ matrix.platform.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
-        platform:
-          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04 }
-          - { target: x86_64-pc-windows-msvc, os: windows-2025 }
-          - { target: x86_64-apple-darwin, os: macos-15-intel }
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python }}
-          architecture: x64
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform.target }}
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: false
-
-      - name: Build ABI3 wheel
-        shell: bash
-        env:
-          PYO3_PYTHON: python
-        run: |
-          uvx --from 'maturin>=1.14.1,<2' maturin build \
-            --release --locked -i python \
-            --manifest-path crates/taunicorn-python/Cargo.toml \
-            --target '${{ matrix.platform.target }}' \
-            --out dist
-
-      - name: Verify cp39 ABI3 wheel
-        shell: bash
-        run: |
-          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-          test -n "$wheel"
-          case "$(basename "$wheel")" in
-            *cp39-abi3*.whl) ;;
-            *) echo "Expected cp39-abi3 wheel: $wheel" >&2; exit 1 ;;
-          esac
-
-      - name: Run all Python tests against installed wheel
-        shell: bash
-        run: |
-          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-          if [[ '${{ matrix.python }}' == '3.9' ]]; then
-            pytest_spec='pytest>=8.4,<9'
-            asyncio_spec='pytest-asyncio==1.2.0'
-          else
-            pytest_spec='pytest>=9.1.1,<10'
-            asyncio_spec='pytest-asyncio>=1.4,<2'
-          fi
-          uv run --isolated --no-project \
-            --python '${{ matrix.python }}' \
-            --with "$wheel" \
-            --with "$pytest_spec" \
-            --with "$asyncio_spec" \
-            python -m pytest -v -ra \
-              --override-ini 'python_files=*.py' python/tests
-
-      - name: Upload tested wheel
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheel-${{ matrix.platform.target }}-py${{ matrix.python }}
-          path: dist/*.whl
-          if-no-files-found: error
-          retention-days: 7
-
-  sdist:
-    name: Source distribution / Python 3.9
+  quality:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v6
-      - name: Build source distribution
-        run: uv build --sdist
-      - name: Test source distribution on minimum Python
-        shell: bash
-        run: |
-          sdist="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
-          test -n "$sdist"
-          uv run --isolated --no-project --python 3.9 \
-            --with "$sdist" \
-            --with 'pytest>=8.4,<9' \
-            --with 'pytest-asyncio==1.2.0' \
-            python -m pytest -v -ra \
-              --override-ini 'python_files=*.py' python/tests
-      - name: Upload source distribution
-        uses: actions/upload-artifact@v4
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          name: taunicorn-source
-          path: dist/*.tar.gz
-          if-no-files-found: error
-          retention-days: 7
+          version: '0.11.18'
+          enable-cache: false
+      - run: uv lock --check
+      - name: Format (existing native stub excluded)
+        run: uvx --from ruff==0.11.13 ruff format --check --exclude _taunicorn.pyi python scripts/ci/py_*.py
+      - name: Lint package, tests, examples and delivery tests
+        run: uvx --from ruff==0.11.13 ruff check python examples/python scripts/ci/py_*.py
+      - name: Type-check package and delivery tests (msgpack ships no stubs)
+        run: uvx --python 3.12 --from mypy==1.16.1 --with msgpack==1.1.1 --with pytest==8.4.2 mypy --disable-error-code import-untyped --check-untyped-defs python/taunicorn scripts/ci/py_*.py

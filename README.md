@@ -51,11 +51,11 @@ For the integration's build and test status, see
 
 Choose the API according to the boundary it provides:
 
-| Component | Data model | Responsibility |
-| --- | --- | --- |
-| `Server` / `Connection` | Ordered local byte stream | Connection lifecycle, concurrent send/receive, timeouts, and directional shutdown |
-| `SecureConnection` | Authenticated, encrypted messages | Peer authentication, framing, encryption, integrity, and per-session sequence checks |
-| `BoundedQueue` / `UnboundedQueue` | In-process FIFO of Python objects | Producer/consumer coordination through Rust-backed channels |
+| Component                         | Data model                        | Responsibility                                                                       |
+| --------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------ |
+| `Server` / `Connection`           | Ordered local byte stream         | Connection lifecycle, concurrent send/receive, timeouts, and directional shutdown    |
+| `SecureConnection`                | Authenticated, encrypted messages | Peer authentication, framing, encryption, integrity, and per-session sequence checks |
+| `BoundedQueue` / `UnboundedQueue` | In-process FIFO of Python objects | Producer/consumer coordination through Rust-backed channels                          |
 
 The raw transport contract is deliberately small:
 
@@ -63,6 +63,7 @@ The raw transport contract is deliberately small:
 - Sending and receiving may progress concurrently. Same-direction operations are serialized; concurrent complete-buffer sends do not interleave their bytes.
 - A receive returns a stream chunk, not necessarily one application write. Applications define framing unless they use the secure message layer.
 - Peer EOF, local read shutdown, local write shutdown, and full connection closure are distinct states.
+- Do not wait for the peer's EOF after a local `shutdown_write` alone. Use a full close to end a raw stream, or an explicit end record in an agreed application protocol when replies must still flow. The transport does not insert a sentinel byte.
 - A completed send or flush is not an acknowledgement that the peer processed, accepted, or committed an operation.
 
 RPC, routing, service discovery, reconnect, persistence, application
@@ -133,10 +134,10 @@ existing Rust implementation through `taunicorn._taunicorn.SecureConnection`.
 This removes that security layer's dependency on a separate Python cryptography
 wheel and puts its native code in Taunicorn's Maturin-built extension.
 
-| Component | Migration scope |
-| --- | --- |
-| Rust core, `crates/taunicorn/` | Unchanged transport, security protocol, and core manifest |
-| Python binding, `crates/taunicorn-python/` | Native secure class, identity helpers, module registration, ownership transfer, and cancellation handling |
+| Component                                  | Migration scope                                                                                                           |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| Rust core, `crates/taunicorn/`             | Unchanged transport, security protocol, and core manifest                                                                 |
+| Python binding, `crates/taunicorn-python/` | Native secure class, identity helpers, module registration, ownership transfer, and cancellation handling                 |
 | Public Python package, `python/taunicorn/` | Replace Python cryptography with a coroutine facade; retain optional Python MessagePack helpers and update typing/exports |
 
 Public constructors, keyword arguments, byte-oriented methods, and identity
@@ -151,8 +152,21 @@ the Taunicorn extension still needs a compatible build for its target.
 
 ### Connection lifecycle
 
-`Server.start()` creates a listener. Each successful `accept()` returns an
-independent `Connection`; `Connection.connect()` creates the client side.
+Use the same asynchronous entry points in Rust, Python and Node.js:
+
+| Operation      | Rust                               | Python                           | Node.js                          |
+| -------------- | ---------------------------------- | -------------------------------- | -------------------------------- |
+| Listen         | `Server::listen(endpoint).await?`  | `await Server.listen(endpoint)`  | `await Server.listen(endpoint)`  |
+| Connect        | `Client::connect(endpoint).await?` | `await Client.connect(endpoint)` | `await Client.connect(endpoint)` |
+| Accept         | `server.accept().await?`           | `await server.accept()`          | `await server.accept()`          |
+| Stop listening | `server.stop().await?`             | `await server.stop()`            | `await server.stop()`            |
+
+Connect and accept both return the existing full-duplex `Connection`, with
+`send`, `receive`, and `close`. The bindings keep native buffer types and
+existing EOF conventions. Reads return chunks, not complete messages. This is
+raw IPC with platform-default access settings: the shared entry points do not
+add authentication or authorization. Existing entry points, including
+`Server.start()` (synchronous in Node.js) and `Connection.connect()`, still work.
 
 Stopping the server interrupts pending accepts and releases the listener once
 in-flight operations release their references. It does not close already
@@ -184,13 +198,13 @@ falling back to plaintext.
 
 ### Runtime and build requirements
 
-| Use case | Requirements |
-| --- | --- |
-| Python transport | Python 3.10 or newer, a running `asyncio` loop for asynchronous operations, and the native extension |
-| Python secure byte messages | Python transport with the native security binding; no `cryptography` or `msgpack` required by this layer |
-| Python secure MessagePack helpers | Native secure byte messages plus the optional `msgpack` package |
-| Rust applications | Rust with Cargo and a Tokio runtime |
-| Source development | Rust stable, Python 3.10 or newer, `uv`, and the Maturin build configuration |
+| Use case                          | Requirements                                                                                             |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Python transport                  | Python 3.10 or newer, a running `asyncio` loop for asynchronous operations, and the native extension     |
+| Python secure byte messages       | Python transport with the native security binding; no `cryptography` or `msgpack` required by this layer |
+| Python secure MessagePack helpers | Native secure byte messages plus the optional `msgpack` package                                          |
+| Rust applications                 | Rust with Cargo and a Tokio runtime                                                                      |
+| Source development                | Rust stable, Python 3.10 or newer, `uv`, and the Maturin build configuration                             |
 
 The Python security module imports its secure class and identity helpers from
 the Taunicorn native extension. It does not import `cryptography`. `msgpack` is
@@ -211,11 +225,11 @@ separate set of dependency pins.
 
 The documented primary Python wheel targets are:
 
-| Platform | Architectures |
-| --- | --- |
-| Linux | `x86_64`, `aarch64` |
-| Windows | `x86_64` |
-| macOS | `x86_64`, `arm64` / `aarch64` |
+| Platform | Architectures                 |
+| -------- | ----------------------------- |
+| Linux    | `x86_64`, `aarch64`           |
+| Windows  | `x86_64`                      |
+| macOS    | `x86_64`, `arm64` / `aarch64` |
 
 A source distribution is also part of the documented release process. Wheel
 availability depends on the specific release. Other Unix-like platforms are
@@ -294,15 +308,15 @@ commands are listed under [Development and releases](#development-and-releases).
 Taunicorn is configured through API arguments. The transport API does not define
 a daemon configuration file or an environment-variable configuration interface.
 
-| Setting | API location | Contract |
-| --- | --- | --- |
-| Endpoint name | `Endpoint`, `Server.start()`, `Connection.connect()` | Non-empty logical name mapped by the native backend; not a portable filesystem path |
-| Endpoint permissions | `Server.bind(..., mode=...)` in Python | Unix permission integer or Windows SDDL string; `None` uses backend/platform defaults |
-| Operation timeout | Methods ending in `_timeout` | Explicit seconds in Python; `std::time::Duration` in Rust |
-| Queue capacity | `BoundedQueue(capacity)` | Positive supported capacity; determines the number of buffered items, not their byte size |
-| Local identity | Secure-session constructor | Raw 32-byte Ed25519 private identity key |
-| Expected peer identity | Secure-session constructor | Pinned raw 32-byte Ed25519 public key for the peer |
-| Secure frame ceiling | Protocol implementation | Fixed at 64 MiB of frame body; not a constructor option |
+| Setting                | API location                                         | Contract                                                                                  |
+| ---------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Endpoint name          | `Endpoint`, `Server.start()`, `Connection.connect()` | Non-empty logical name mapped by the native backend; not a portable filesystem path       |
+| Endpoint permissions   | `Server.bind(..., mode=...)` in Python               | Unix permission integer or Windows SDDL string; `None` uses backend/platform defaults     |
+| Operation timeout      | Methods ending in `_timeout`                         | Explicit seconds in Python; `std::time::Duration` in Rust                                 |
+| Queue capacity         | `BoundedQueue(capacity)`                             | Positive supported capacity; determines the number of buffered items, not their byte size |
+| Local identity         | Secure-session constructor                           | Raw 32-byte Ed25519 private identity key                                                  |
+| Expected peer identity | Secure-session constructor                           | Pinned raw 32-byte Ed25519 public key for the peer                                        |
+| Secure frame ceiling   | Protocol implementation                              | Fixed at 64 MiB of frame body; not a constructor option                                   |
 
 Python timeout values must be finite, non-negative, and representable by the
 native duration type. The timeout methods require an explicit value; the example
@@ -323,6 +337,7 @@ in protected storage; distribute only the public key:
 
 ```python
 from taunicorn.security import generate_identity_private_key, identity_public_key
+
 private_key = generate_identity_private_key()
 public_key = identity_public_key(private_key)
 ```
@@ -351,6 +366,7 @@ stream chunks; a single receive is not assumed to return four bytes.
 import asyncio
 from taunicorn import Connection, Server
 
+
 async def read_exact(connection: Connection, size: int) -> bytes:
     data = bytearray()
     while len(data) < size:
@@ -359,6 +375,7 @@ async def read_exact(connection: Connection, size: int) -> bytes:
             raise EOFError("peer closed before the record was complete")
         data.extend(chunk)
     return bytes(data)
+
 
 async def serve_once(server: Server) -> None:
     connection = await server.accept_timeout(5.0)
@@ -369,6 +386,7 @@ async def serve_once(server: Server) -> None:
         await connection.shutdown_write()
     finally:
         await connection.close()
+
 
 async def main() -> None:
     endpoint = "taunicorn-stream-example"
@@ -389,6 +407,7 @@ async def main() -> None:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await server.stop()
+
 
 asyncio.run(main())
 ```
@@ -415,7 +434,7 @@ async fn main() -> Result<()> {
         Connection::connect(endpoint),
     )?;
     sender.send(b"PING").await?;
-    sender.shutdown_write().await?;
+    sender.close().await?;
     let mut buffer = [0_u8; 4096];
     loop {
         match receiver.receive(&mut buffer).await? {
@@ -424,7 +443,6 @@ async fn main() -> Result<()> {
         }
     }
     receiver.close().await?;
-    sender.close().await?;
     server.stop().await?;
     Ok(())
 }
@@ -454,6 +472,7 @@ from taunicorn.security import (
     identity_public_key,
 )
 
+
 async def serve_once(
     server: Server, private_key: bytes, client_public_key: bytes
 ) -> None:
@@ -469,6 +488,7 @@ async def serve_once(
         await secure.send(b"PONG")
     finally:
         await connection.close()
+
 
 async def run_demo() -> None:
     client_private = generate_identity_private_key()
@@ -496,8 +516,10 @@ async def run_demo() -> None:
         await asyncio.gather(task, return_exceptions=True)
         await server.stop()
 
+
 async def main() -> None:
     await asyncio.wait_for(run_demo(), timeout=10.0)
+
 
 asyncio.run(main())
 ```
@@ -553,12 +575,15 @@ into one encrypted frame:
 ```python
 from taunicorn.security import SecureConnection
 
+
 async def send_job(secure: SecureConnection) -> None:
-    await secure.send_msgpack({
-        "type": "job.start",
-        "job_id": "42",
-        "priority": 5,
-    })
+    await secure.send_msgpack(
+        {
+            "type": "job.start",
+            "job_id": "42",
+            "priority": 5,
+        }
+    )
 ```
 
 Receive the value with `await secure.receive_msgpack()`. Python retains
@@ -598,6 +623,7 @@ receiving raises `QueueClosed`.
 import asyncio
 from taunicorn import BoundedQueue, QueueClosed
 
+
 async def main() -> None:
     queue = BoundedQueue(16)
     await queue.send({"kind": "work", "id": 1})
@@ -607,6 +633,7 @@ async def main() -> None:
             print(await queue.recv())
     except QueueClosed:
         pass  # Expected completion after the buffered item is consumed.
+
 
 asyncio.run(main())
 ```
@@ -629,16 +656,16 @@ not one atomic application record. `flush()` is not a remote acknowledgement.
 
 ### EOF and directional shutdown
 
-| Operation or result | Meaning |
-| --- | --- |
-| Python raw `receive(n) == b""`, where `n > 0` | Peer EOF has been observed |
-| Python raw `receive(0)` | Empty result without establishing EOF |
-| Rust `ReceiveResult::EndOfStream` | Peer EOF has been observed |
-| Rust `ReceiveResult::Data(0)` | Empty destination buffer; not EOF |
-| `shutdown_read()` | Stop local receives without closing the send direction |
-| `shutdown_write()` | Finish local sending without closing the receive direction |
-| `connection.close()` | Close both directions and interrupt pending local native I/O |
-| `server.stop()` | Stop accepting; accepted connections remain independent |
+| Operation or result                           | Meaning                                                      |
+| --------------------------------------------- | ------------------------------------------------------------ |
+| Python raw `receive(n) == b""`, where `n > 0` | Peer EOF has been observed                                   |
+| Python raw `receive(0)`                       | Empty result without establishing EOF                        |
+| Rust `ReceiveResult::EndOfStream`             | Peer EOF has been observed                                   |
+| Rust `ReceiveResult::Data(0)`                 | Empty destination buffer; not EOF                            |
+| `shutdown_read()`                             | Stop local receives without closing the send direction       |
+| `shutdown_write()`                            | Finish local sending without closing the receive direction   |
+| `connection.close()`                          | Close both directions and interrupt pending local native I/O |
+| `server.stop()`                               | Stop accepting; accepted connections remain independent      |
 
 Peer EOF does not imply that the local send direction is closed. Similarly,
 `is_closed() == False` does not imply that both directions remain usable.
@@ -655,12 +682,12 @@ end-of-session message in the described protocol.
 Python provides the following bounded transport operations. Rust provides the
 corresponding methods with `Duration` arguments.
 
-| Python call | Bound |
-| --- | --- |
-| `Connection.connect_timeout(endpoint, seconds)` | Connection establishment |
-| `server.accept_timeout(seconds)` | Waiting for a connection |
-| `connection.read_timeout(max_bytes, seconds)` | One raw receive operation |
-| `connection.write_all_timeout(data, seconds)` | Waiting for the write gate and sending the complete buffer |
+| Python call                                     | Bound                                                      |
+| ----------------------------------------------- | ---------------------------------------------------------- |
+| `Connection.connect_timeout(endpoint, seconds)` | Connection establishment                                   |
+| `server.accept_timeout(seconds)`                | Waiting for a connection                                   |
+| `connection.read_timeout(max_bytes, seconds)`   | One raw receive operation                                  |
+| `connection.write_all_timeout(data, seconds)`   | Waiting for the write gate and sending the complete buffer |
 
 A timeout around one raw receive does not bound an entire application record or
 secure handshake. Use an application-level deadline for a multi-step exchange.
@@ -704,34 +731,34 @@ endpoint; server and connection factories accept either a string or an
 
 #### Server operations
 
-| API | Purpose |
-| --- | --- |
-| `await Server.start(endpoint)` | Create a listener with default platform settings |
-| `await Server.bind(name, mode=...)` | Create a listener with platform-specific permissions |
-| `await server.accept()` | Accept one independent connection |
-| `await server.accept_timeout(seconds)` | Accept with a timeout |
-| `await server.stop()` | Stop the listener and interrupt pending accepts |
-| `server.close()` | Synchronous compatibility form of listener stop |
-| `server.pause()` / `server.resume()` | Gate acceptance of new connections |
-| `server.info()` | Obtain a `ServerInfo` diagnostic snapshot |
+| API                                    | Purpose                                              |
+| -------------------------------------- | ---------------------------------------------------- |
+| `await Server.start(endpoint)`         | Create a listener with default platform settings     |
+| `await Server.bind(name, mode=...)`    | Create a listener with platform-specific permissions |
+| `await server.accept()`                | Accept one independent connection                    |
+| `await server.accept_timeout(seconds)` | Accept with a timeout                                |
+| `await server.stop()`                  | Stop the listener and interrupt pending accepts      |
+| `server.close()`                       | Synchronous compatibility form of listener stop      |
+| `server.pause()` / `server.resume()`   | Gate acceptance of new connections                   |
+| `server.info()`                        | Obtain a `ServerInfo` diagnostic snapshot            |
 
 Server diagnostics include `name`, `endpoint`, `is_started()`, `is_stopped()`,
 `is_closed()`, `is_paused()`, and `is_accepting()`.
 
 #### Connection operations
 
-| API | Purpose |
-| --- | --- |
-| `await Connection.connect(endpoint)` | Establish a raw connection |
-| `await Connection.connect_timeout(endpoint, seconds)` | Establish a connection with a timeout |
-| `await connection.receive(max_bytes)` | Receive an arbitrary stream chunk |
-| `await connection.send(data)` | Send the complete buffer |
-| `await connection.write(data)` | Return the count from a possibly partial write |
-| `await connection.flush()` | Flush locally buffered output |
-| `await connection.shutdown_read()` / `shutdown_write()` | Shut down one direction |
-| `await connection.close()` | Close both directions |
-| `connection.into_split()` | Consume the wrapper and return directional halves |
-| `connection.info()` | Obtain a `ConnectionInfo` diagnostic snapshot |
+| API                                                     | Purpose                                           |
+| ------------------------------------------------------- | ------------------------------------------------- |
+| `await Connection.connect(endpoint)`                    | Establish a raw connection                        |
+| `await Connection.connect_timeout(endpoint, seconds)`   | Establish a connection with a timeout             |
+| `await connection.receive(max_bytes)`                   | Receive an arbitrary stream chunk                 |
+| `await connection.send(data)`                           | Send the complete buffer                          |
+| `await connection.write(data)`                          | Return the count from a possibly partial write    |
+| `await connection.flush()`                              | Flush locally buffered output                     |
+| `await connection.shutdown_read()` / `shutdown_write()` | Shut down one direction                           |
+| `await connection.close()`                              | Close both directions                             |
+| `connection.into_split()`                               | Consume the wrapper and return directional halves |
+| `connection.info()`                                     | Obtain a `ConnectionInfo` diagnostic snapshot     |
 
 `read()` and `read_bytes()` alias receive. `write_bytes()` aliases the partial
 write operation; `write_all()` and `write_all_bytes()` alias complete-buffer
@@ -774,18 +801,18 @@ Python retains `Listener = Server`, `Stream = Connection`, and
 Import the public facade and identity helpers from `taunicorn.security`. Create
 sessions through the asynchronous factories, not by calling `SecureConnection()`.
 
-| API | Purpose |
-| --- | --- |
-| `await SecureConnection.client(connection, *, identity_private_key, server_identity_public_key)` | Transfer an unsplit connection and perform the existing Rust client handshake |
-| `await SecureConnection.server(connection, *, client_identity_public_key, identity_private_key)` | Transfer an unsplit connection and perform the existing Rust server handshake |
-| `await secure.send(plaintext)` | Encrypt and send one `bytes` value |
-| `await secure.receive()` | Authenticate and decrypt one message, returning `bytes` |
-| `await secure.send_msgpack(value)` / `receive_msgpack()` | Serialize or deserialize with the optional Python `msgpack` package |
-| `await secure.close()` | Make the secure session terminal and close its native transport |
-| `secure.is_closed()` | Report native closure or binding-level terminal cancellation state |
-| `secure.connection` | Return the original Python connection for diagnostics and closing, not raw I/O |
-| `generate_identity_private_key()` | Return a fresh raw 32-byte private identity key from Rust |
-| `identity_public_key(identity_private_key)` | Derive the raw 32-byte public identity key in Rust |
+| API                                                                                              | Purpose                                                                        |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `await SecureConnection.client(connection, *, identity_private_key, server_identity_public_key)` | Transfer an unsplit connection and perform the existing Rust client handshake  |
+| `await SecureConnection.server(connection, *, client_identity_public_key, identity_private_key)` | Transfer an unsplit connection and perform the existing Rust server handshake  |
+| `await secure.send(plaintext)`                                                                   | Encrypt and send one `bytes` value                                             |
+| `await secure.receive()`                                                                         | Authenticate and decrypt one message, returning `bytes`                        |
+| `await secure.send_msgpack(value)` / `receive_msgpack()`                                         | Serialize or deserialize with the optional Python `msgpack` package            |
+| `await secure.close()`                                                                           | Make the secure session terminal and close its native transport                |
+| `secure.is_closed()`                                                                             | Report native closure or binding-level terminal cancellation state             |
+| `secure.connection`                                                                              | Return the original Python connection for diagnostics and closing, not raw I/O |
+| `generate_identity_private_key()`                                                                | Return a fresh raw 32-byte private identity key from Rust                      |
+| `identity_public_key(identity_private_key)`                                                      | Derive the raw 32-byte public identity key in Rust                             |
 
 The public async methods are Python coroutines; their native counterparts are
 awaitable-returning bindings. Private Python cryptographic state and exact
@@ -813,14 +840,14 @@ The compatibility aliases are `SocketListener`, `SocketStream`, and
 
 Both Python queue types expose the same lifecycle and send/receive operations:
 
-| Operation | Behavior |
-| --- | --- |
-| `await queue.send(item)` | Send through the async bridge; bounded queues wait for free capacity |
-| `await queue.recv()` | Wait for the next item, or fail after closure and drain |
-| `queue.try_send(item)` | Attempt an immediate send without requiring an event loop |
-| `queue.try_recv()` | Attempt an immediate receive without waiting for an item or receiver lock |
-| `queue.close()` | Reject new sends, wake waiters, and preserve buffered items |
-| `queue.is_closed()` | Report whether sending is closed; not whether the buffer is empty |
+| Operation                | Behavior                                                                  |
+| ------------------------ | ------------------------------------------------------------------------- |
+| `await queue.send(item)` | Send through the async bridge; bounded queues wait for free capacity      |
+| `await queue.recv()`     | Wait for the next item, or fail after closure and drain                   |
+| `queue.try_send(item)`   | Attempt an immediate send without requiring an event loop                 |
+| `queue.try_recv()`       | Attempt an immediate receive without waiting for an item or receiver lock |
+| `queue.close()`          | Reject new sends, wake waiters, and preserve buffered items               |
+| `queue.is_closed()`      | Report whether sending is closed; not whether the buffer is empty         |
 
 `BoundedQueue(capacity)` requires a supported capacity of at least one.
 
@@ -841,26 +868,26 @@ sending side or, for receives, a queue that is both closed and drained.
 Catch errors according to the operation, rather than treating all failures as
 transport disconnects.
 
-| Condition | Exception |
-| --- | --- |
-| Invalid endpoint, timeout, capacity, key length, or oversized outgoing secure plaintext | `ValueError` |
-| Invalid endpoint argument type, or non-`bytes` secure key/payload | `TypeError` |
-| Operation timeout | `TimeoutError` |
-| Closed, stopped, or directionally shut-down transport | `ConnectionError` |
-| Native secure identity, signature, framing, sequence, or authentication failure | `ConnectionError`, apart from the EOF, sequence-exhaustion, and preserved I/O cases below |
-| EOF while assembling a secure frame | `EOFError` |
-| Secure send or receive sequence exhausted | `OverflowError` |
-| Paused raw transport | `BlockingIOError`; an error returned from native secure I/O is mapped by the secure binding instead |
-| Bounded queue has no available slot | `QueueFull` (`BlockingIOError`) |
-| No immediately available queue item | `QueueEmpty` (`BlockingIOError`) |
-| Queue receiver lock is held | `QueueBusy` (`BlockingIOError`) |
-| Queue sending is closed, or a closed queue is drained | `QueueClosed` (`RuntimeError`) |
-| Preserved native `std::io::Error`, or failure to generate an identity key | `OSError` |
-| Consumed/busy wrapper, raw I/O after secure upgrade, or invalid split/upgrade attempt | `RuntimeError` |
-| Secure session already closed or made terminal by cancellation/failure | `ConnectionError` |
-| Missing optional `msgpack` package | `ModuleNotFoundError` |
-| Other unclassified transport runtime failure | `RuntimeError` |
-| Panic propagated by the Rust async bridge | `RustPanic` (`BaseException`) |
+| Condition                                                                               | Exception                                                                                           |
+| --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Invalid endpoint, timeout, capacity, key length, or oversized outgoing secure plaintext | `ValueError`                                                                                        |
+| Invalid endpoint argument type, or non-`bytes` secure key/payload                       | `TypeError`                                                                                         |
+| Operation timeout                                                                       | `TimeoutError`                                                                                      |
+| Closed, stopped, or directionally shut-down transport                                   | `ConnectionError`                                                                                   |
+| Native secure identity, signature, framing, sequence, or authentication failure         | `ConnectionError`, apart from the EOF, sequence-exhaustion, and preserved I/O cases below           |
+| EOF while assembling a secure frame                                                     | `EOFError`                                                                                          |
+| Secure send or receive sequence exhausted                                               | `OverflowError`                                                                                     |
+| Paused raw transport                                                                    | `BlockingIOError`; an error returned from native secure I/O is mapped by the secure binding instead |
+| Bounded queue has no available slot                                                     | `QueueFull` (`BlockingIOError`)                                                                     |
+| No immediately available queue item                                                     | `QueueEmpty` (`BlockingIOError`)                                                                    |
+| Queue receiver lock is held                                                             | `QueueBusy` (`BlockingIOError`)                                                                     |
+| Queue sending is closed, or a closed queue is drained                                   | `QueueClosed` (`RuntimeError`)                                                                      |
+| Preserved native `std::io::Error`, or failure to generate an identity key               | `OSError`                                                                                           |
+| Consumed/busy wrapper, raw I/O after secure upgrade, or invalid split/upgrade attempt   | `RuntimeError`                                                                                      |
+| Secure session already closed or made terminal by cancellation/failure                  | `ConnectionError`                                                                                   |
+| Missing optional `msgpack` package                                                      | `ModuleNotFoundError`                                                                               |
+| Other unclassified transport runtime failure                                            | `RuntimeError`                                                                                      |
+| Panic propagated by the Rust async bridge                                               | `RustPanic` (`BaseException`)                                                                       |
 
 `RustPanic` is the async bridge's exported panic type, not a separate lookalike
 exception. As a `BaseException` subclass, it is not covered by a normal
@@ -916,15 +943,15 @@ bytes     ciphertext || 16-byte authentication tag
 
 The length counts the frame body, excluding the four-byte outer prefix.
 
-| Quantity | Value |
-| --- | --- |
-| Identity private / public key | 32 bytes each |
-| Client or server hello body | 162 bytes |
-| Maximum frame body | 67,108,864 bytes (64 MiB) |
-| Encrypted body overhead | 25 bytes: version + sequence + authentication tag |
-| Maximum application plaintext | 67,108,839 bytes (64 MiB minus 25 bytes) |
-| Total per-message wire overhead | 29 bytes, including the outer length prefix |
-| AEAD nonce | 12 bytes: four-byte derived prefix + eight-byte sequence |
+| Quantity                        | Value                                                    |
+| ------------------------------- | -------------------------------------------------------- |
+| Identity private / public key   | 32 bytes each                                            |
+| Client or server hello body     | 162 bytes                                                |
+| Maximum frame body              | 67,108,864 bytes (64 MiB)                                |
+| Encrypted body overhead         | 25 bytes: version + sequence + authentication tag        |
+| Maximum application plaintext   | 67,108,839 bytes (64 MiB minus 25 bytes)                 |
+| Total per-message wire overhead | 29 bytes, including the outer length prefix              |
+| AEAD nonce                      | 12 bytes: four-byte derived prefix + eight-byte sequence |
 
 An empty application plaintext is valid because its encrypted body still
 contains protocol metadata and an authentication tag. An empty outer frame body
@@ -1054,24 +1081,24 @@ private keys. This README does not claim an independent cryptographic audit.
 
 ## Troubleshooting
 
-| Symptom | What to check | Action |
-| --- | --- | --- |
-| Native module cannot be imported | Active interpreter, OS/CPU target, ABI tag, runtime libraries, and source build output | Install the matching wheel into the running environment or rebuild for that target; `abi3` is not a universal platform binary |
-| `taunicorn.security` import fails because native security names are missing | Facade and extension from different builds, or an old extension | Rebuild/reinstall the integrated Python package; installing `cryptography` does not add missing native exports |
-| `send_msgpack()` / `receive_msgpack()` raises `ModuleNotFoundError` | Optional `msgpack` dependency | Install `msgpack` in the active environment; byte-oriented secure methods do not require it |
-| Installation still requests `cryptography` | Installed release metadata, lockfiles, legacy module, or another dependency | Remove this security layer's obsolete requirement during integration only if no other code needs it; rebuild and inspect the resulting wheel metadata |
-| Endpoint creation or connection fails | Name, existing listener, backend permissions, server lifecycle | Inspect the OS error and confirm the intended listener is running |
-| Raw receive returns fewer bytes than expected | Stream chunking, not message boundaries | Accumulate a bounded application record or use the secure message API |
-| Raw receive returns `b""` | Requested size and observed peer EOF | Distinguish a zero-size read from EOF; check `at_eof()` |
-| `BlockingIOError` during transport I/O | Local pause state | Resume the appropriate object or correct the lifecycle logic |
-| `into_split()` or secure upgrade raises `RuntimeError` | Existing split/upgrade/secure state or in-flight raw operation | Finish the raw operation before transferring ownership; do not split or re-upgrade a secure session |
-| Raw I/O raises `RuntimeError` after handshake | Connection is already owned by the secure layer | Use `secure.send()` / `secure.receive()`; keep the original connection only for diagnostics and closing |
-| Secure I/O raises a closed/cancelled-session error | Earlier cancellation or native protocol/I/O failure | Close and discard the session; establish a new connection and handshake |
-| Secure handshake stalls | Opposite role, protocol version, peer progress, missing deadline | Bound the handshake and close the raw connection on failure |
-| Secure identity or signature check fails | Pinned public key, local identity, key encoding | Correct provisioning through a trusted path; do not disable verification |
-| Secure sequence, tag, or frame error | Mixed raw/secure I/O, corruption, incompatible version, interrupted operation | Close the session and investigate before establishing another |
-| Queue operation cannot proceed immediately | Full buffer, empty buffer, receiver lock, or closed state | Handle `QueueFull`, `QueueEmpty`, `QueueBusy`, or `QueueClosed` separately |
-| Peer EOF is mistaken for completed work | Missing application completion acknowledgement | Define an explicit application-level success response |
+| Symptom                                                                     | What to check                                                                          | Action                                                                                                                                                |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Native module cannot be imported                                            | Active interpreter, OS/CPU target, ABI tag, runtime libraries, and source build output | Install the matching wheel into the running environment or rebuild for that target; `abi3` is not a universal platform binary                         |
+| `taunicorn.security` import fails because native security names are missing | Facade and extension from different builds, or an old extension                        | Rebuild/reinstall the integrated Python package; installing `cryptography` does not add missing native exports                                        |
+| `send_msgpack()` / `receive_msgpack()` raises `ModuleNotFoundError`         | Optional `msgpack` dependency                                                          | Install `msgpack` in the active environment; byte-oriented secure methods do not require it                                                           |
+| Installation still requests `cryptography`                                  | Installed release metadata, lockfiles, legacy module, or another dependency            | Remove this security layer's obsolete requirement during integration only if no other code needs it; rebuild and inspect the resulting wheel metadata |
+| Endpoint creation or connection fails                                       | Name, existing listener, backend permissions, server lifecycle                         | Inspect the OS error and confirm the intended listener is running                                                                                     |
+| Raw receive returns fewer bytes than expected                               | Stream chunking, not message boundaries                                                | Accumulate a bounded application record or use the secure message API                                                                                 |
+| Raw receive returns `b""`                                                   | Requested size and observed peer EOF                                                   | Distinguish a zero-size read from EOF; check `at_eof()`                                                                                               |
+| `BlockingIOError` during transport I/O                                      | Local pause state                                                                      | Resume the appropriate object or correct the lifecycle logic                                                                                          |
+| `into_split()` or secure upgrade raises `RuntimeError`                      | Existing split/upgrade/secure state or in-flight raw operation                         | Finish the raw operation before transferring ownership; do not split or re-upgrade a secure session                                                   |
+| Raw I/O raises `RuntimeError` after handshake                               | Connection is already owned by the secure layer                                        | Use `secure.send()` / `secure.receive()`; keep the original connection only for diagnostics and closing                                               |
+| Secure I/O raises a closed/cancelled-session error                          | Earlier cancellation or native protocol/I/O failure                                    | Close and discard the session; establish a new connection and handshake                                                                               |
+| Secure handshake stalls                                                     | Opposite role, protocol version, peer progress, missing deadline                       | Bound the handshake and close the raw connection on failure                                                                                           |
+| Secure identity or signature check fails                                    | Pinned public key, local identity, key encoding                                        | Correct provisioning through a trusted path; do not disable verification                                                                              |
+| Secure sequence, tag, or frame error                                        | Mixed raw/secure I/O, corruption, incompatible version, interrupted operation          | Close the session and investigate before establishing another                                                                                         |
+| Queue operation cannot proceed immediately                                  | Full buffer, empty buffer, receiver lock, or closed state                              | Handle `QueueFull`, `QueueEmpty`, `QueueBusy`, or `QueueClosed` separately                                                                            |
+| Peer EOF is mistaken for completed work                                     | Missing application completion acknowledgement                                         | Define an explicit application-level success response                                                                                                 |
 
 `info()` provides immutable diagnostic snapshots, not live views. Capture them
 alongside operation context when investigating lifecycle failures. Do not log
@@ -1116,19 +1143,28 @@ failure category where useful. Avoid private identity keys, traffic keys,
 plaintext secrets, and complete sensitive payloads. Treat ambiguous delivery
 as an application recovery problem rather than an automatic transport retry.
 
+## Performance Benchmarks
+
+Taunicorn IPC performance measured with Python and pytest-benchmark.
+
+![Taunicorn Performance Benchmarks](docs/benchmarks/taunicorn.png)
+
+The benchmark runs automatically on GitHub Actions.
+Results represent the CI runner environment and may vary between runs.
+
 ## Development and releases
 
 ### Repository responsibilities
 
-| Location | Responsibility |
-| --- | --- |
-| `crates/taunicorn/` | Existing native transport and secure protocol; unchanged by the Python security migration |
-| `crates/taunicorn-python/` | PyO3 transport/security bindings, Python-side ownership policy, and Rust-backed Python channels |
-| `python/taunicorn/` | Public package, thin security coroutine facade, optional MessagePack helpers, and typing assets |
-| `python/tests/` | Python tests and native integration coverage |
-| `docs/` | Supporting documentation |
-| `.github/workflows/` | CI, security checks, and publishing workflows |
-| Root `Cargo.toml` and `pyproject.toml` | Workspace, dependency, and packaging configuration |
+| Location                               | Responsibility                                                                                  |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `crates/taunicorn/`                    | Existing native transport and secure protocol; unchanged by the Python security migration       |
+| `crates/taunicorn-python/`             | PyO3 transport/security bindings, Python-side ownership policy, and Rust-backed Python channels |
+| `python/taunicorn/`                    | Public package, thin security coroutine facade, optional MessagePack helpers, and typing assets |
+| `python/tests/`                        | Python tests and native integration coverage                                                    |
+| `docs/`                                | Supporting documentation                                                                        |
+| `.github/workflows/`                   | CI, security checks, and publishing workflows                                                   |
+| Root `Cargo.toml` and `pyproject.toml` | Workspace, dependency, and packaging configuration                                              |
 
 ### Integrating the Python security replacement
 
@@ -1282,13 +1318,13 @@ any of those native or distribution checks.
 
 The documented workflow responsibilities are separated by concern:
 
-| Workflow | Responsibility |
-| --- | --- |
-| `rust-ci.yml` | Formatting, compilation, Clippy, and native transport tests |
-| `python-ci.yml` | Python version/platform checks, wheel installation, integration tests, and source-distribution checks |
-| `security.yml` | Rust/Python dependency audits and dependency-change checks |
-| `publish-python.yaml` | Python version validation, distribution builds, smoke tests, attestations, and PyPI publishing |
-| `publish-rust.yml` | Cargo publish dry run and explicitly gated crates.io publishing |
+| Workflow              | Responsibility                                                                                        |
+| --------------------- | ----------------------------------------------------------------------------------------------------- |
+| `rust-ci.yml`         | Formatting, compilation, Clippy, and native transport tests                                           |
+| `python-ci.yml`       | Python version/platform checks, wheel installation, integration tests, and source-distribution checks |
+| `security.yml`        | Rust/Python dependency audits and dependency-change checks                                            |
+| `publish-python.yaml` | Python version validation, distribution builds, smoke tests, attestations, and PyPI publishing        |
+| `publish-rust.yml`    | Cargo publish dry run and explicitly gated crates.io publishing                                       |
 
 The documented Python matrix covers Python 3.10–3.14 on Linux and Python 3.14 on
 Windows and macOS targets. Native transport tests target Linux, Windows, and

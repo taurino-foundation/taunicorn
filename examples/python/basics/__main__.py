@@ -1,8 +1,8 @@
 import asyncio
 from multiprocessing import Process
 
-import client
-import server
+import examples.python.basics.client as client
+import examples.python.basics.server as server
 
 
 def run_server():

@@ -9,9 +9,16 @@ name = "_taunicorn"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = {version = "=0.29", default-features = false, features = ["abi3-py39","anyhow","bytes","extension-module","generate-import-lib","macros"]}
-pyo3-async-runtimes = {version = "0.29", default-features = false, features = ["tokio-runtime"]}
-anyhow = "1.0.91"
 taunicorn = { path = "../taunicorn" }
-tokio = {version = "1.48.0",default-features = false,features = ["io-util","sync","time","macros"]}
-tokio-util = {version = "0.7.17",default-features = false}
+pyo3 = { version = "=0.29", default-features = false, features = [
+  "abi3-py39",
+  "anyhow",
+  "bytes",
+  "extension-module",
+  "generate-import-lib",
+  "macros",
+] }
+pyo3-async-runtimes = { version = "0.29", default-features = false, features = ["tokio-runtime"] }
+anyhow.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true

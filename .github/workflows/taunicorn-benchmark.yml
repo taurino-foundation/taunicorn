@@ -1,0 +1,80 @@
+name: Taunicorn Benchmark Plot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 1' # Monday, 04:00 UTC
+
+permissions:
+  contents: write # Required to commit the README and plot
+
+concurrency:
+  group: taunicorn-benchmark-readme
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: 'latest-known'
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Set up Python dependencies
+        run: |
+          uv python install 3.12
+          uv sync --python 3.12 --group dev --extra test --no-install-project
+          uv pip install --python .venv/bin/python pytest-benchmark matplotlib
+
+      - name: Build Taunicorn Python bindings
+        env:
+          PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: uv run --no-sync maturin develop --release
+
+      - name: Run Taunicorn-only benchmarks
+        env:
+          PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: |
+          mkdir -p "$RUNNER_TEMP/taunicorn-runtime" benchmark-results
+          chmod 700 "$RUNNER_TEMP/taunicorn-runtime"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/taunicorn-runtime"
+          uv run --no-sync pytest benchmark/test_taunicorn_transport.py \
+            --benchmark-only \
+            -k 'benchmark_send or benchmark_receive or benchmark_roundtrip' \
+            --benchmark-json=benchmark-results/taunicorn.json \
+            -v
+
+      - name: Generate plot and update README
+        run: uv run --no-sync python scripts/update_benchmark_readme.py benchmark-results/taunicorn.json
+
+      - name: Upload raw benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: taunicorn-benchmarks-linux
+          path: benchmark-results/taunicorn.json
+          retention-days: 30
+
+      - name: Commit README and plot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md docs/benchmarks/taunicorn.png
+          if git diff --cached --quiet; then
+            echo "No benchmark documentation changes"
+            exit 0
+          fi
+          git commit -m "docs: update Taunicorn benchmark plot [skip ci]"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"

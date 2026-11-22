@@ -1,58 +1,106 @@
 name: Publish Rust
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish taunicorn to crates.io after dry-run
+        description: Publish the staged native library to crates.io
         required: true
         type: boolean
         default: false
+      version:
+        description: Exact crate version (required for production)
+        type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: crates-io-taunicorn
-  cancel-in-progress: false
-
 jobs:
-  dry-run:
-    name: cargo publish --dry-run
+  quality:
+    uses: ./.github/workflows/quality.yml
+
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain # rust-toolchain.toml
+      - run: python3 scripts/ci/rust_build.py dist-rust
+      - run: python3 scripts/ci/release_sbom.py sboms dist-rust/*.crate
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-crate-${{ github.run_attempt }}
+          path: sboms/*.cdx.json
+          if-no-files-found: error
+          retention-days: 90
+      - run: python3 scripts/ci/artifacts.py seal dist-rust
+      - run: python3 scripts/ci/rust_release_test.py
+        env:
+          RUST_RELEASE_ARTIFACT: dist-rust
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: rust-crate-${{ github.run_attempt }}
+          path: dist-rust/
+          if-no-files-found: error
+
+  stage:
+    needs: [quality, build]
+    if: github.ref == 'refs/heads/main'
+    environment: staging
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Verify taunicorn package
-        run: cargo publish --manifest-path crates/taunicorn/Cargo.toml --locked --dry-run
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: dist-rust
+          merge-multiple: true
+      - run: python3 scripts/ci/artifacts.py verify dist-rust
+      - name: Run consumer against candidate, then previous published archive
+        run: python3 scripts/ci/rust_release.py stage dist-rust
 
   publish:
-    name: Publish taunicorn
-    if: ${{ inputs.publish }}
-    needs: dry-run
+    needs: [build, stage]
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+      inputs.publish == true && vars.PRODUCTION_DELIVERY_ENABLED == 'true'
     runs-on: ubuntu-24.04
-    environment:
-      name: crates-io
+    timeout-minutes: 10
+    concurrency:
+      group: crates-io-taunicorn
+      cancel-in-progress: false
+    environment: crates-io
     permissions:
       contents: read
       id-token: write
-    timeout-minutes: 15
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Authenticate with crates.io
-        id: auth
-        uses: rust-lang/crates-io-auth-action@v1
-      - name: Publish taunicorn
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: dist-rust
+          merge-multiple: true
+      - run: python3 scripts/ci/artifacts.py verify dist-rust
+      - name: Check requested version and registry history before authentication
+        run: python3 scripts/ci/rust_release.py preflight dist-rust
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+      - id: auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1
+      - name: Upload staged bytes without rebuilding
+        run: python3 scripts/ci/rust_release.py publish dist-rust
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: cargo publish --manifest-path crates/taunicorn/Cargo.toml --locked
+          RELEASE_VERSION: ${{ inputs.version }}

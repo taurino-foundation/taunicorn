@@ -1,0 +1,57 @@
+name: Taunicorn quality
+on:
+  workflow_call:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    uses: ./.github/workflows/rust-ci.yml
+  python:
+    uses: ./.github/workflows/python-ci.yml
+  security:
+    uses: ./.github/workflows/security.yml
+  pipeline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Test artifact integrity checks
+        run: python3 -m unittest discover -s scripts/ci -p test_artifacts.py -v
+      - name: Validate workflow syntax and job dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --output actionlint.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  actionlint.tgz\n' 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 | sha256sum -c -
+          tar -xzf actionlint.tgz actionlint
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/actionlint" -color
+  interop:
+    name: Python server / Node client
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '26'
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: '0.13.0'
+          enable-cache: false
+      - run: node .yarn/releases/yarn-4.18.1.cjs install --immutable
+      - run: node .yarn/releases/yarn-4.18.1.cjs napi build --platform --package taunicorn-javascript --output-dir javascript/taunicorn --js index.cjs -- --locked
+      - run: node .yarn/releases/yarn-4.18.1.cjs lint
+      - run: node .yarn/releases/yarn-4.18.1.cjs tsc -p __test__/tsconfig.json --noEmit
+      - run: node .yarn/releases/yarn-4.18.1.cjs test
+      - run: uv run --isolated --locked --python 3.12 python scripts/ci/interop.py
+      - run: uv run --isolated --locked --python 3.12 python scripts/ci/test_example_close.py -v

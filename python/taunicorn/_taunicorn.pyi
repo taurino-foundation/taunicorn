@@ -158,8 +158,22 @@ class Server:
     A server owns a local endpoint and accepts full-duplex byte-stream
     connections.
 
-    Instances are created with :meth:`start` or :meth:`bind`.
+    Use :meth:`listen_private` for same-user admission. Ordinary :meth:`listen`
+    and :meth:`bind` do not verify the peer's identity.
     """
+
+    @staticmethod
+    def listen(endpoint: _EndpointLike) -> Awaitable["Server"]:
+        """Listen on a local endpoint with the platform's default access settings."""
+        ...
+
+    @staticmethod
+    def listen_private(endpoint: _EndpointLike) -> Awaitable["Server"]:
+        """Listen for verified same-user peers; use connect_private at the other end.
+
+        Unix requires an owner-only XDG_RUNTIME_DIR. No fallback or encryption.
+        """
+        ...
 
     @staticmethod
     def start(endpoint: _EndpointLike) -> Awaitable["Server"]:
@@ -185,7 +199,6 @@ class Server:
         """
         ...
     if sys.platform == "win32":
-
         @staticmethod
         def bind(
             name: str,
@@ -210,7 +223,6 @@ class Server:
             """
             ...
     else:
-
         @staticmethod
         def bind(
             name: str,
@@ -379,6 +391,11 @@ class Connection:
         ...
 
     @staticmethod
+    def connect_private(endpoint: _EndpointLike) -> Awaitable["Connection"]:
+        """Verify the server's OS user before returning a raw stream. No service identity or encryption."""
+        ...
+
+    @staticmethod
     def connect_timeout(
         endpoint: _EndpointLike,
         timeout: float,
@@ -404,7 +421,7 @@ class Connection:
 
     def receive(self, max_bytes: int) -> Awaitable[bytes]:
         """
-        Receive up to ``max_bytes`` bytes.
+        Receive up to ``max_bytes`` bytes (at most 64 KiB per raw read).
 
         ``b""`` represents EOF when ``max_bytes`` is non-zero. Calling the
         method with ``max_bytes == 0`` also returns ``b""`` immediately;
@@ -645,7 +662,7 @@ class ReadHalf:
 
     def receive(self, max_bytes: int) -> Awaitable[bytes]:
         """
-        Receive up to ``max_bytes`` bytes.
+        Receive up to ``max_bytes`` bytes (at most 64 KiB per raw read).
 
         ``b""`` represents EOF for non-zero ``max_bytes``.
         """
@@ -868,6 +885,7 @@ class UnboundedQueue:
 
 def generate_identity_private_key() -> bytes: ...
 def identity_public_key(identity_private_key: bytes) -> bytes: ...
+
 @final
 class SecureConnection:
     """Native Rust secure session. Methods return asyncio Futures, not coroutines.

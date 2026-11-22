@@ -1,0 +1,106 @@
+{
+  "name": "taunicorn",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Async local IPC — inter-process communication for Node.js and Python. Named pipes/endpoints, full-duplex byte streams, Rust Tokio core, napi-rs, PyO3, cross-platform.",
+  "main": "javascript/taunicorn/index.cjs",
+  "types": "javascript/taunicorn/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./javascript/taunicorn/index.d.ts",
+      "import": "./javascript/taunicorn/index.js",
+      "require": "./javascript/taunicorn/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/taurino-foundation/taunicorn.git"
+  },
+  "license": "APACHE-2.0 or MIT",
+  "keywords": [
+    "napi-rs",
+    "NAPI",
+    "N-API",
+    "Rust",
+    "node-addon",
+    "node-addon-api"
+  ],
+  "files": [
+    "javascript/taunicorn"
+  ],
+  "napi": {
+    "binaryName": "taunicorn",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-pc-windows-msvc",
+      "x86_64-unknown-linux-gnu"
+    ]
+  },
+  "engines": {
+    "node": ">= 20"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "scripts": {
+    "artifacts": "napi artifacts --package taunicorn-javascript --output-dir javascript/taunicorn",
+    "bench": "node --import @oxc-node/core/register benchmark/bench.ts",
+    "build": "napi build --platform --package taunicorn-javascript --output-dir javascript/taunicorn --js index.cjs && napi build --platform --package taunicorn-javascript --output-dir javascript/taunicorn --esm --js index.js",
+    "build:debug": "napi build --platform --package taunicorn-javascript --output-dir javascript/taunicorn",
+    "format": "run-p format:oxfmt format:rs",
+    "format:oxfmt": "oxfmt",
+    "format:rs": "cargo fmt",
+    "lint": "oxlint .",
+    "prepublishOnly": "napi prepublish -t npm --package taunicorn-javascript --output-dir javascript/taunicorn",
+    "test": "ava",
+    "preversion": "napi build --platform --package taunicorn-javascript --output-dir javascript/taunicorn && git add .",
+    "version": "napi version --package taunicorn-javascript --output-dir javascript/taunicorn",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@emnapi/core": "^2.0.0-alpha.5",
+    "@emnapi/runtime": "^2.0.0-alpha.5",
+    "@napi-rs/cli": "^3.9.1",
+    "@napi-rs/wasm-runtime": "^1.2.4",
+    "@oxc-node/core": "^1.0.0",
+    "@tybys/wasm-util": "^0.10.4",
+    "@types/node": "^26.6.6",
+    "ava": "^8.0.1",
+    "chalk": "^6.0.0",
+    "emnapi": "^2.0.0-alpha.5",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.5.1",
+    "npm-run-all2": "^9.0.3",
+    "oxfmt": "^0.77.0",
+    "oxlint": "^1.83.0",
+    "prettier": "^3.9.6",
+    "tinybench": "^6.2.0",
+    "typescript": "^7.0.2"
+  },
+  "lint-staged": {
+    "*.@(js|ts|tsx)": [
+      "oxlint --fix"
+    ],
+    "*.@(js|ts|tsx|yml|yaml|md|json|toml)": [
+      "oxfmt --write"
+    ]
+  },
+  "ava": {
+    "extensions": [
+      "ts"
+    ],
+    "timeout": "2m",
+    "workerThreads": false,
+    "environmentVariables": {
+      "OXC_TSCONFIG_PATH": "./__test__/tsconfig.json"
+    },
+    "nodeArguments": [
+      "--import",
+      "@oxc-node/core/register"
+    ]
+  },
+  "packageManager": "yarn@4.18.1"
+}
