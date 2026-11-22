@@ -82,11 +82,15 @@ class ReleaseSbomTest(unittest.TestCase):
             verify_embedded(
                 wheel, "binding", {("binding", "1"): "", ("dep", "1"): "MIT"}
             )
-            with self.assertRaisesRegex(ValueError, "dep"):
+            with self.assertRaisesRegex(
+                ValueError, r"Missing embedded wheel SBOM component: .*dep.*2"
+            ):
                 verify_embedded(
                     wheel, "binding", {("binding", "1"): "", ("dep", "2"): "MIT"}
                 )
-            with self.assertRaisesRegex(ValueError, "dep"):
+            with self.assertRaisesRegex(
+                ValueError, r"license mismatch: .*dep.*1.*Apache-2\.0.*MIT"
+            ):
                 verify_embedded(
                     wheel, "binding", {("binding", "1"): "", ("dep", "1"): "Apache-2.0"}
                 )

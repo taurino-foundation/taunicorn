@@ -20,6 +20,35 @@ spec.loader.exec_module(bridge)
 
 
 class BridgeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_node_example_does_not_log_requests_or_replies(self):
+        server = await Server.listen(bridge.ENDPOINT)
+        try:
+            client = await asyncio.create_subprocess_exec(
+                "node",
+                str(path.parents[1] / "javascript" / "client.js"),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                peer = await asyncio.wait_for(server.accept(), 5)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    (logs, _), _ = await asyncio.wait_for(
+                        asyncio.gather(
+                            client.communicate(), bridge.handle_connection(peer)
+                        ),
+                        5,
+                    )
+                self.assertEqual(client.returncode, 0, logs)
+                self.assertIn(b"[js-client] done", logs)
+                self.assertNotIn(b'"name":"example"', logs)
+                self.assertNotIn(b"Hallo example", logs)
+            finally:
+                if client.returncode is None:
+                    client.kill()
+                    await client.wait()
+        finally:
+            await server.stop()
+
     async def test_final_reply_then_eof_without_logging_payload(self):
         endpoint = "taunicorn-test-" + uuid.uuid4().hex
         server = await Server.listen(endpoint)

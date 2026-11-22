@@ -37,8 +37,8 @@ test('public API exchanges bytes concurrently in both stream directions', async 
 })
 
 test.serial('private factories exchange bytes through standard accept', async (t) => {
-  const dir = await mkdtemp(join(await realpath(homedir()), 'tu-'))
   const previous = process.env.XDG_RUNTIME_DIR
+  const dir = await mkdtemp(join(previous || (await realpath(homedir())), 'tu-'))
   const mask = process.umask(0o077)
   process.env.XDG_RUNTIME_DIR = dir
   const endpoint = `tu-${randomUUID().slice(0, 12)}`
@@ -49,6 +49,7 @@ test.serial('private factories exchange bytes through standard accept', async (t
     } catch (error) {
       if (
         ['linux', 'win32'].includes(process.platform) ||
+        process.env.GITHUB_ACTIONS === 'true' ||
         !(error instanceof Error) ||
         error.message !== 'UnsupportedPlatform'
       )

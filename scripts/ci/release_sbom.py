@@ -43,6 +43,8 @@ def cargo(manifest, target):
         [
             "cargo",
             "tree",
+            "--color",
+            "never",
             "--locked",
             "--manifest-path",
             manifest,
@@ -83,17 +85,18 @@ def verify_embedded(wheel, binding, crates):
         raise ValueError("Wrong embedded wheel SBOM root")
     entries = {(c["name"], c["version"]): c for c in [root, *bom["components"]]}
     for key, license in crates.items():
+        if key not in entries:
+            raise ValueError(f"Missing embedded wheel SBOM component: {key}")
         declared = {
             item.get("expression")
             or item.get("license", {}).get("id")
             or item.get("license", {}).get("name")
-            for item in entries.get(key, {}).get("licenses", [])
+            for item in entries[key].get("licenses", [])
         }
-        if key not in entries or (
-            license and license.replace("/", " OR ") not in declared
-        ):
+        if license and license.replace("/", " OR ") not in declared:
             raise ValueError(
-                f"Embedded wheel SBOM component or license mismatch: {key}"
+                f"Embedded wheel SBOM license mismatch: {key}: "
+                f"Cargo declares {license!r}, wheel declares {sorted(map(repr, declared))}"
             )
 
 

@@ -156,6 +156,7 @@ jobs:
             export UV_BUILD_CONSTRAINT="$RUNNER_TEMP/maturin.txt"
             printf 'maturin==%s\n' "$MATURIN_VERSION" > "$UV_BUILD_CONSTRAINT"
           fi
+          source scripts/ci/private_runtime.sh
           python scripts/ci/py_test_dist.py dist "$VERSION"
 
   staging:

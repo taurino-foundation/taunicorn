@@ -49,12 +49,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          umask 077
-
-          XDG_RUNTIME_DIR=$(mktemp -d "$HOME/.taunicorn-ci.XXXXXXXX")
-          export XDG_RUNTIME_DIR
-
-          trap 'rm -rf -- "$XDG_RUNTIME_DIR"' EXIT
+          source scripts/ci/private_runtime.sh
 
           cargo test \
             --workspace \
@@ -116,50 +111,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "$RUNNER_OS" != Windows ]]; then
-            umask 077
-
-            XDG_RUNTIME_DIR=$(mktemp -d "$HOME/.taunicorn-ci.XXXXXXXX")
-            export XDG_RUNTIME_DIR
-
-            trap 'rm -rf -- "$XDG_RUNTIME_DIR"' EXIT
-          fi
-
-          # macOS-specific ACL and directory diagnostics.
-          if [[ "$RUNNER_OS" == macOS ]]; then
-            echo "========================================"
-            echo "macOS IPC compliance diagnostics"
-            echo "========================================"
-
-            echo "Operating system:"
-            sw_vers
-
-            echo "Current user:"
-            id
-
-            echo "Runtime directory:"
-            echo "$XDG_RUNTIME_DIR"
-
-            echo "Filesystem root:"
-            ls -ldeO /
-
-            echo "Users directory:"
-            ls -ldeO /Users
-
-            echo "Home directory:"
-            ls -ldeO "$HOME"
-
-            echo "Private runtime directory:"
-            ls -ldeO "$XDG_RUNTIME_DIR"
-
-            echo "Runtime directory permissions:"
-            stat -f 'mode=%Sp uid=%u gid=%g' "$XDG_RUNTIME_DIR"
-
-            echo "Extended ACL entries:"
-            ls -le "$XDG_RUNTIME_DIR"
-
-            echo "========================================"
-          fi
+          source scripts/ci/private_runtime.sh
 
           echo "Running default Rust transport tests"
 

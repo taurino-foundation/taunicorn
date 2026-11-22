@@ -63,15 +63,14 @@ async def handle_connection(conn: taunicorn.Connection) -> None:
                     print("[py-server] invalid request")
                     return
                 resp = handle_request(req)
-                print(f"[py-server] sending: {resp}")
                 await conn.send(json.dumps(resp).encode() + b"\n")
 
                 if req.get("method") == "quit":
                     return
             if len(buf) > MAX_LINE:
                 return
-    except Exception as e:  # breiter fangen, damit wir es SEHEN
-        print(f"[py-server] error: {type(e).__name__}: {e}")
+    except Exception as e:
+        print(f"[py-server] error: {type(e).__name__}")
     finally:
         await conn.close()
         print("[py-server] connection closed")

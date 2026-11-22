@@ -24,8 +24,6 @@ class RpcClient {
           // leerer Buffer ist kein EOF – weiter warten
           continue
         }
-        console.log('[js-client] recv:', JSON.stringify(chunk.toString()))
-
         this.buffer = Buffer.concat([this.buffer, chunk])
 
         let idx
@@ -38,8 +36,8 @@ class RpcClient {
           let resp
           try {
             resp = JSON.parse(line)
-          } catch (e) {
-            console.error('[js-client] invalid response:', line)
+          } catch {
+            console.error('[js-client] invalid response')
             continue
           }
 
@@ -51,9 +49,9 @@ class RpcClient {
         }
         if (this.buffer.length > 8192) throw new Error('record too long')
       }
-    } catch (err) {
+    } catch {
       if (!this.closed) {
-        console.error('[js-client] readLoop error:', err)
+        console.error('[js-client] read failed')
       }
     } finally {
       for (const [, pending] of this.pending) {
@@ -70,7 +68,6 @@ class RpcClient {
     }
     const id = this.nextId++
     const req = JSON.stringify({ id, method, params })
-    console.log('[js-client] send:', req)
 
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject })
@@ -86,8 +83,8 @@ class RpcClient {
     this.closed = true
     try {
       await this.conn.close()
-    } catch (err) {
-      console.error('[js-client] close error:', err)
+    } catch {
+      console.error('[js-client] close failed')
     }
   }
 
@@ -104,16 +101,13 @@ async function main() {
   const rpc = new RpcClient(conn)
 
   console.log('[js-client] calling add ...')
-  const sum = await rpc.call('add', { a: 20, b: 22 })
-  console.log('[js-client] add ->', sum)
+  await rpc.call('add', { a: 20, b: 22 })
 
   console.log('[js-client] calling greet ...')
   const greeting = await rpc.call('greet', { name: 'example' })
-  console.log('[js-client] greet ->', greeting)
 
   console.log('[js-client] calling time ...')
-  const t = await rpc.call('time')
-  console.log('[js-client] time ->', t)
+  await rpc.call('time')
 
   console.log('[js-client] calling quit ...')
   await rpc.call('quit')
@@ -121,10 +115,13 @@ async function main() {
   await rpc.close()
   await rpc.waitForReader() // wichtig: warten bis readLoop fertig ist
 
+  if (typeof greeting !== 'string' || !greeting.startsWith('Hallo example,')) {
+    throw new Error('unexpected greeting')
+  }
   console.log('[js-client] done ✅')
 }
 
-main().catch((err) => {
-  console.error('[js-client] failed:', err) // echten Fehler zeigen
+main().catch(() => {
+  console.error('[js-client] request failed')
   process.exitCode = 1
 })

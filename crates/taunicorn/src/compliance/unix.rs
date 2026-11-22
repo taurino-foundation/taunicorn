@@ -113,14 +113,6 @@ fn check_acl(_dir: &File) -> Result<()> { Err(AdmissionError::UnsupportedPlatfor
 fn check_dir(file: &File, last: bool) -> Result<()> {
   let m = file.metadata()?;
 
-  #[cfg(target_os = "macos")]
-  eprintln!(
-    "[taunicorn][macos] directory check: uid={}, mode={:o}, last={}",
-    m.uid(),
-    m.mode() & 0o7777,
-    last,
-  );
-
   if !m.is_dir()
     || (m.uid() != 0 && m.uid() != uid())
     || m.mode() & 0o022 != 0

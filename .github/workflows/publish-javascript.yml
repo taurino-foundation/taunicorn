@@ -113,6 +113,7 @@ jobs:
         run: |
           python scripts/ci/artifacts.py verify native
           tar -xOzf native/*.tgz "package/taunicorn.$ABI.node" > "javascript/taunicorn/taunicorn.$ABI.node"
+          source scripts/ci/private_runtime.sh
           node .yarn/releases/yarn-4.18.1.cjs test
       - name: Format, lint and types
         if: runner.os == 'Linux' && matrix.node == '26'

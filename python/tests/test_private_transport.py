@@ -16,7 +16,7 @@ from taunicorn import Client, Endpoint, Server
 def private_runtime(monkeypatch):
     # A 0700 child under a world-writable /tmp is not a trusted socket path.
     with tempfile.TemporaryDirectory(
-        prefix="tu-", dir=Path.home().resolve()
+        prefix="tu-", dir=os.environ.get("XDG_RUNTIME_DIR") or Path.home().resolve()
     ) as directory:
         monkeypatch.setenv("XDG_RUNTIME_DIR", directory)
         previous = os.umask(0o077)
@@ -31,7 +31,11 @@ async def test_private_transport(private_runtime):
     try:
         server = await Server.listen_private(name)
     except RuntimeError as exc:
-        if sys.platform in ("linux", "win32") or str(exc) != "UnsupportedPlatform":
+        if (
+            sys.platform in ("linux", "win32")
+            or os.environ.get("GITHUB_ACTIONS") == "true"
+            or str(exc) != "UnsupportedPlatform"
+        ):
             raise
         with pytest.raises(RuntimeError, match="^UnsupportedPlatform$"):
             await Client.connect_private(name)
