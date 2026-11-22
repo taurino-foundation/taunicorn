@@ -21,7 +21,9 @@
 
 **Abhängigkeiten und Secrets:** Im GitHub-Actions-Lauf `44963851869` vom 21. November 2026 (UTC), Commit `d0f852a`, waren RustSec (`Cargo.lock`, 109 Abhängigkeiten), der rekursive Yarn-Audit und der Audit der gesperrten Python-Laufzeitabhängigkeiten erfolgreich. Gitleaks meldete in 46 gescannten Commits keine Treffer. Das deckt weder unversionierte Dateien und die aktuellen lokalen Änderungen noch alle Build-/Test-Abhängigkeiten der Python-Pakete ab.
 
-**SBOM-Befund:** Die vier Wheel-Jobs erbten `CARGO_TERM_COLOR=always`. Die ANSI-Sequenzen um den Duplikatmarker `(*)` in `cargo tree` gelangten in den verglichenen Lizenzwert. Derselbe Fehler ließ sich mit einem lokal per Maturin 1.14.1 gebauten Windows-Wheel reproduzieren. Mit `cargo tree --color never` besteht der Abgleich bei weiterhin erzwungener Umgebungsfarbe. Versions-, Lizenz- und SHA-256-Prüfung bleiben verpflichtend; ein neuer GitHub-Matrixlauf steht aus.
+**SBOM-Befund:** Die vier Wheel-Jobs erbten `CARGO_TERM_COLOR=always`. Die ANSI-Sequenzen um den Duplikatmarker `(*)` in `cargo tree` gelangten in den verglichenen Lizenzwert. Derselbe Fehler ließ sich mit einem lokal per Maturin 1.14.1 gebauten Windows-Wheel reproduzieren. Mit `cargo tree --color never` besteht der Abgleich bei weiterhin erzwungener Umgebungsfarbe. Versions-, Lizenz- und SHA-256-Prüfung bleiben verpflichtend.
+
+**GitHub-Nachlauf für `5ae96a5`:** Die Rust-Transporttests auf macOS Intel und ARM64 bestanden (`44972150705`). Der Python-PR-Lauf (`44972150706`) bestand für alle vier Wheels und das sdist einschließlich SBOM und Installationstests; es wurde nichts veröffentlicht. Im JavaScript-Lauf (`44972150733`) bestand der AVA-Test gegen das gepackte Linux-Addon; nur die Formatprüfung für `benchmark/ordinary-duplex.mjs` schlug fehl. Die Datei wurde lokal formatiert, ohne IPC- oder Benchmark-Logik zu ändern. Betriebsabnahme mit getrennten Konten und Windows-SMB bleibt offen.
 
 **Nächste Schritte und Abnahme:**
 

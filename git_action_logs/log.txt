@@ -1,0 +1,46 @@
+[1]: https://github.com/taurino-foundation/taunicorn/actions/runs/44972150733/job/137054656801#logs
+
+
+Skip to content
+taurino-foundation
+taunicorn
+Repository navigation
+Code
+Issues
+Pull requests
+7
+ (7)
+Agents
+Actions
+Projects
+Wiki
+Security and quality
+Insights
+Settings
+Publish JavaScript
+feat: extend Taunicorn transports, bindings and benchmark CI #4
+All jobs
+Run details
+Annotations
+1 error and 1 warning
+AVA / linux-x64-gnu / Node 26
+failed 8 minutes ago in 17s
+Search logs
+2s
+2s
+5s
+4s
+1s
+1s
+0s
+Run yarn=(node .yarn/releases/yarn-4.18.1.cjs)
+Checking formatting...
+
+benchmark/ordinary-duplex.mjs (0ms)
+
+Format issues found in above 1 files. Run without `--check` to fix.
+Finished in 7ms on 12 files using 4 threads.
+Error: Process completed with exit code 1.
+0s
+0s
+0s

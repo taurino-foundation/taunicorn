@@ -13,7 +13,10 @@ async function readExactly(conn, size) {
   return bytes
 }
 
-const watchdog = setTimeout(() => { console.error('ordinary duplex timed out'); process.exit(1) }, 15000)
+const watchdog = setTimeout(() => {
+  console.error('ordinary duplex timed out')
+  process.exit(1)
+}, 15000)
 const name = `tu-bench-${randomUUID()}`
 const server = await Server.listen(name)
 const connect = () => Promise.all([Connection.connect(name), server.accept()])
@@ -38,8 +41,12 @@ const start = performance.now()
 for (let i = 0; i < 32; i++) {
   up.writeUInt32LE(i)
   down.writeUInt32LE(i)
-  const [a, b] = await Promise.all([readExactly(peer, up.length), readExactly(client, down.length),
-    client.send(up), peer.send(down)])
+  const [a, b] = await Promise.all([
+    readExactly(peer, up.length),
+    readExactly(client, down.length),
+    client.send(up),
+    peer.send(down),
+  ])
   assert.deepEqual(a, up)
   assert.deepEqual(b, down)
 }
@@ -50,6 +57,12 @@ await next.send(Buffer.from('new'))
 assert.deepEqual(await readExactly(accepted, 3), Buffer.from('new'))
 await Promise.all([next.close(), accepted.close(), server.stop()])
 clearTimeout(watchdog)
-console.log(JSON.stringify({ rtt_p50_ms: samples[49], rtt_p99_ms: samples[98],
-  aggregate_MiB_s: 32 * (up.length + down.length) / 2 ** 20 / seconds,
-  peak_process_RSS_KiB: process.resourceUsage().maxRSS, reconnect: 'ok' }))
+console.log(
+  JSON.stringify({
+    rtt_p50_ms: samples[49],
+    rtt_p99_ms: samples[98],
+    aggregate_MiB_s: (32 * (up.length + down.length)) / 2 ** 20 / seconds,
+    peak_process_RSS_KiB: process.resourceUsage().maxRSS,
+    reconnect: 'ok',
+  }),
+)
